@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import discord
 from discord.ext import commands
 from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError
 
 
 logging.basicConfig(
@@ -158,6 +159,12 @@ intents.voice_states = True
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
 players: Dict[int, GuildPlayer] = {}
 ytdl = YoutubeDL(YTDL_OPTIONS)
+fallback_ytdl = YoutubeDL(
+    {
+        **YTDL_OPTIONS,
+        "format": "best",
+    }
+)
 BASE_DIR = Path(__file__).resolve().parent
 RADIO_ALIASES_FILE = BASE_DIR / "radio_aliases.json"
 
@@ -253,9 +260,22 @@ async def run_blocking(func, *args):
 async def extract_track(query: str, requested_by: str) -> Track:
     def _extract() -> dict:
         search_term = query if looks_like_url(query) else f"ytsearch1:{query}"
-        return ytdl.extract_info(search_term, download=False)
+        try:
+            return ytdl.extract_info(search_term, download=False)
+        except DownloadError as error:
+            message = str(error)
+            if "Requested format is not available" not in message:
+                raise
+            LOGGER.warning("Primarni audio format neni dostupny, zkousim fallback `best`.")
+            return fallback_ytdl.extract_info(search_term, download=False)
 
-    data = await run_blocking(_extract)
+    try:
+        data = await run_blocking(_extract)
+    except DownloadError as error:
+        LOGGER.exception("yt-dlp selhalo", exc_info=error)
+        raise commands.CommandError(
+            "Nepodarilo se nacist video z YouTube. Zkus jiny odkaz nebo pozdeji opakuj prikaz."
+        )
     if "entries" in data:
         entries = data.get("entries") or []
         if not entries:
