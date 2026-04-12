@@ -5,7 +5,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 from urllib.parse import urlparse
 
 import discord
@@ -156,7 +156,7 @@ intents.guilds = True
 intents.voice_states = True
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
-players: dict[int, GuildPlayer] = {}
+players: Dict[int, GuildPlayer] = {}
 ytdl = YoutubeDL(YTDL_OPTIONS)
 BASE_DIR = Path(__file__).resolve().parent
 RADIO_ALIASES_FILE = BASE_DIR / "radio_aliases.json"
@@ -215,7 +215,7 @@ def load_discord_token() -> str:
     )
 
 
-def load_radio_aliases() -> dict[str, str]:
+def load_radio_aliases() -> Dict[str, str]:
     if not RADIO_ALIASES_FILE.exists():
         return {}
 
@@ -228,14 +228,14 @@ def load_radio_aliases() -> dict[str, str]:
     if not isinstance(raw_data, dict):
         return {}
 
-    aliases: dict[str, str] = {}
+    aliases: Dict[str, str] = {}
     for alias, stream_url in raw_data.items():
         if isinstance(alias, str) and isinstance(stream_url, str):
             aliases[alias.lower()] = stream_url
     return aliases
 
 
-def save_radio_aliases(aliases: dict[str, str]) -> None:
+def save_radio_aliases(aliases: Dict[str, str]) -> None:
     RADIO_ALIASES_FILE.write_text(
         json.dumps(dict(sorted(aliases.items())), ensure_ascii=True, indent=2),
         encoding="utf-8",
