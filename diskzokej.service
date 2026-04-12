@@ -1,0 +1,15 @@
+[Unit]
+Description=Diskzokej Discord Music Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/diskzokej
+ExecStart=/usr/bin/python3 /home/pi/diskzokej/diskzokej.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
