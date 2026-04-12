@@ -245,12 +245,17 @@ def save_radio_aliases(aliases: Dict[str, str]) -> None:
 radio_aliases = load_radio_aliases()
 
 
+async def run_blocking(func, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: func(*args))
+
+
 async def extract_track(query: str, requested_by: str) -> Track:
     def _extract() -> dict:
         search_term = query if looks_like_url(query) else f"ytsearch1:{query}"
         return ytdl.extract_info(search_term, download=False)
 
-    data = await asyncio.to_thread(_extract)
+    data = await run_blocking(_extract)
     if "entries" in data:
         entries = data.get("entries") or []
         if not entries:
