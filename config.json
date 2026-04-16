@@ -1,0 +1,29 @@
+{
+  "command_prefix": "!",
+  "idle_disconnect_timeout": 300,
+  "playback_start_timeout": 15,
+  "direct_media_suffixes": [
+    ".aac",
+    ".flac",
+    ".m3u",
+    ".m3u8",
+    ".m4a",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".oga",
+    ".opus",
+    ".wav",
+    ".webm"
+  ],
+  "ytdl_options": {
+    "format": "bestaudio/best",
+    "noplaylist": true,
+    "default_search": "ytsearch1",
+    "quiet": true,
+    "no_warnings": true
+  },
+  "fallback_ytdl_options": {
+    "format": "best"
+  }
+}
