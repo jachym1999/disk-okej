@@ -1,0 +1,45 @@
+{
+  "play": [
+    "hraj",
+    "prehraj"
+  ],
+  "radio": [
+    "stanice"
+  ],
+  "radios": [
+    "radia"
+  ],
+  "pause": [
+    "pauza"
+  ],
+  "resume": [
+    "pokracuj",
+    "obnov"
+  ],
+  "skip": [
+    "preskoc",
+    "dalsi"
+  ],
+  "stop": [
+    "zastav"
+  ],
+  "queue": [
+    "fronta"
+  ],
+  "leave": [
+    "odpoj",
+    "odejdi"
+  ],
+  "np": [
+    "pravehraje",
+    "cohraje"
+  ],
+  "help": [
+    "napoveda",
+    "pomoc"
+  ],
+  "panel": [
+    "ovladani",
+    "gui"
+  ]
+}

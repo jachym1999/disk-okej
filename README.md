@@ -1,6 +1,7 @@
 # Discord music bot pro Raspberry Pi
 
 Bot prijima prikazy primo v textovem kanalu na Discord serveru.
+Krome klasickych textovych prikazu umi i slash commandy a jednoduche Discord GUI s tlacitky.
 
 ## Co umi
 
@@ -8,11 +9,18 @@ Bot prijima prikazy primo v textovem kanalu na Discord serveru.
 - `!radio <stream_url> [alias]`: prida internetove radio a volitelne ho ulozi pod aliasem
 - `!radio <alias>`: spusti drive ulozene radio podle aliasu
 - `!radios`: vypise ulozene radio aliasy
+- `!pause`: pozastavi prehravani
+- `!resume`: obnovi prehravani
 - `!skip`: preskoci aktualni skladbu
 - `!stop`: zastavi prehravani a vymaze frontu
 - `!queue`: vypise frontu
 - `!np`: ukaze, co prave hraje
 - `!leave`: odpoji bota z hlasoveho kanalu
+- `!panel`: otevre ovladaci panel s tlacitky a vyberem radia
+
+Slash commandy:
+
+- `/play`, `/radio`, `/radios`, `/pause`, `/resume`, `/skip`, `/stop`, `/queue`, `/np`, `/leave`, `/help`, `/panel`
 
 ## Instalace na Raspberry Pi
 
@@ -71,6 +79,8 @@ python3 diskzokej.py
 ```
 
 Konfiguraci prefixu, timeoutu a `yt-dlp` voleb muzes upravit v `config.json`.
+V `command_aliases.json` si muzes nadefinovat vlastni aliasy prikazu, treba ceske varianty nad puvodnimi anglickymi prikazy.
+Po prvnim startu se slash commandy automaticky synchronizuji do Discordu.
 
 7. Nastav automaticke spousteni pres `systemd` co nejjednoduseji:
 
@@ -120,3 +130,6 @@ python3 -m unittest discover -s tests
 - U `!radio` zadavej primou URL audio streamu, ne jen domovskou stranku radia.
 - Aliasy radii se ukladaji do `radio_aliases.json`, takze zustanou zachovane i po restartu bota.
 - Pokud chces, aby token nebyl v shellu ani v service souboru, nech ho v `token.txt` nebo `.env` vedle `diskzokej.py`.
+- `command_prefix` v `config.json` muze byt libovolny neprazdny retezec, napr. `!`, `*`, `:` nebo treba `Prosim `.
+- V `command_aliases.json` jsou klice puvodni anglicke prikazy a hodnoty jsou seznamy aliasu. Puvodni anglicke prikazy zustavaji funkcni vzdycky.
+- `panel` otevre Discord GUI s tlacitky `Pause`, `Resume`, `Skip`, `Stop`, `Queue`, `Leave` a dropdownem na ulozena radia.
