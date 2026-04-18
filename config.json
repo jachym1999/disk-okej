@@ -1,5 +1,6 @@
 {
   "command_prefix": "!",
+  "slash_command_guild_ids": [],
   "idle_disconnect_timeout": 300,
   "playback_start_timeout": 15,
   "direct_media_suffixes": [

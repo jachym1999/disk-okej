@@ -26,6 +26,7 @@ CONFIG_FILE = BASE_DIR / "config.json"
 COMMAND_ALIASES_FILE = BASE_DIR / "command_aliases.json"
 DEFAULT_CONFIG = {
     "command_prefix": "!",
+    "slash_command_guild_ids": [],
     "idle_disconnect_timeout": 300,
     "playback_start_timeout": 15,
     "direct_media_suffixes": [
@@ -98,9 +99,32 @@ def normalize_command_prefix(value: Any) -> str:
     return value
 
 
+def parse_guild_id_list(value: Any) -> list[int]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        LOGGER.warning("slash_command_guild_ids musi byt seznam cisel.")
+        return []
+
+    guild_ids: list[int] = []
+    for raw_item in value:
+        try:
+            guild_id = int(raw_item)
+        except (TypeError, ValueError):
+            LOGGER.warning("Ignoruju neplatne guild ID pro slash commandy: %r", raw_item)
+            continue
+        if guild_id > 0:
+            guild_ids.append(guild_id)
+
+    return guild_ids
+
+
 CONFIG = load_config()
 COMMAND_PREFIX = normalize_command_prefix(
     CONFIG.get("command_prefix", DEFAULT_CONFIG["command_prefix"])
+)
+SLASH_COMMAND_GUILD_IDS = parse_guild_id_list(
+    CONFIG.get("slash_command_guild_ids", DEFAULT_CONFIG["slash_command_guild_ids"])
 )
 IDLE_DISCONNECT_TIMEOUT = int(
     CONFIG.get("idle_disconnect_timeout", DEFAULT_CONFIG["idle_disconnect_timeout"])
@@ -669,7 +693,7 @@ def build_queue_text(player: Optional[GuildPlayer]) -> str:
 
     if items:
         lines.extend(f"{index}. {track.title}" for index, track in enumerate(items, start=1))
-    elif not player.current:
+    elif player is None or not player.current:
         lines.append("Fronta je prazdna.")
 
     return "\n".join(lines)
@@ -1003,7 +1027,17 @@ async def on_ready() -> None:
     if not tree_synced:
         try:
             synced_commands = await bot.tree.sync()
-            LOGGER.info("Sesynchronizovano slash commandu: %s", len(synced_commands))
+            LOGGER.info("Sesynchronizovano globalnich slash commandu: %s", len(synced_commands))
+
+            for guild_id in SLASH_COMMAND_GUILD_IDS:
+                guild_object = discord.Object(id=guild_id)
+                bot.tree.copy_global_to(guild=guild_object)
+                guild_commands = await bot.tree.sync(guild=guild_object)
+                LOGGER.info(
+                    "Sesynchronizovano slash commandu pro guild %s: %s",
+                    guild_id,
+                    len(guild_commands),
+                )
         except Exception as error:
             LOGGER.exception("Synchronizace slash commandu selhala", exc_info=error)
         tree_synced = True

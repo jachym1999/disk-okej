@@ -81,6 +81,7 @@ python3 diskzokej.py
 Konfiguraci prefixu, timeoutu a `yt-dlp` voleb muzes upravit v `config.json`.
 V `command_aliases.json` si muzes nadefinovat vlastni aliasy prikazu, treba ceske varianty nad puvodnimi anglickymi prikazy.
 Po prvnim startu se slash commandy automaticky synchronizuji do Discordu.
+Pokud chces, aby se slash commandy propsaly rychle primo na konkretni server, vypln v `config.json` pole `slash_command_guild_ids`.
 
 7. Nastav automaticke spousteni pres `systemd` co nejjednoduseji:
 
@@ -131,5 +132,6 @@ python3 -m unittest discover -s tests
 - Aliasy radii se ukladaji do `radio_aliases.json`, takze zustanou zachovane i po restartu bota.
 - Pokud chces, aby token nebyl v shellu ani v service souboru, nech ho v `token.txt` nebo `.env` vedle `diskzokej.py`.
 - `command_prefix` v `config.json` muze byt libovolny neprazdny retezec, napr. `!`, `*`, `:` nebo treba `Prosim `.
+- `slash_command_guild_ids` v `config.json` je seznam Discord server ID, kam se maji slash commandy synchronizovat okamzite po restartu, napr. `[123456789012345678]`.
 - V `command_aliases.json` jsou klice puvodni anglicke prikazy a hodnoty jsou seznamy aliasu. Puvodni anglicke prikazy zustavaji funkcni vzdycky.
 - `panel` otevre Discord GUI s tlacitky `Pause`, `Resume`, `Skip`, `Stop`, `Queue`, `Leave` a dropdownem na ulozena radia.

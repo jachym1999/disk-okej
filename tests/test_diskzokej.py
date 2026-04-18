@@ -75,6 +75,10 @@ def install_test_stubs() -> None:
                 self.response = InteractionResponse()
                 self.followup = InteractionFollowup()
 
+        class Object:
+            def __init__(self, id) -> None:
+                self.id = id
+
         class View:
             def __init__(self, *args, **kwargs) -> None:
                 self.items = []
@@ -112,8 +116,14 @@ def install_test_stubs() -> None:
             return decorator
 
         class CommandTree:
-            async def sync(self):
+            def __init__(self) -> None:
+                self.copied_guilds = []
+
+            async def sync(self, *args, **kwargs):
                 return []
+
+            def copy_global_to(self, guild):
+                self.copied_guilds.append(guild)
 
             def command(self, *args, **kwargs):
                 def decorator(func):
@@ -130,6 +140,7 @@ def install_test_stubs() -> None:
         discord_module.SelectOption = SelectOption
         discord_module.ButtonStyle = ButtonStyle
         discord_module.Interaction = Interaction
+        discord_module.Object = Object
         discord_module.Guild = object
         discord_module.VoiceClient = object
         discord_module.VoiceState = object
