@@ -1057,6 +1057,34 @@ class RadioSelect(discord.ui.Select):
             await send_interaction_text(interaction, str(error), ephemeral=True)
 
 
+class PlayModal(discord.ui.Modal, title="Pustit hudbu"):
+    query = discord.ui.TextInput(
+        label="Co chces pustit",
+        placeholder="YouTube hledani nebo URL",
+        required=True,
+        max_length=400,
+    )
+
+    def __init__(self, guild: discord.Guild):
+        super().__init__()
+        self.guild = guild
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            guild = require_interaction_guild(interaction)
+            member = require_interaction_member(interaction)
+            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
+            track = await enqueue_play_request(guild, member, str(self.query), text_channel)
+            await interaction.response.defer()
+            await update_panel_status(
+                guild,
+                f"Pridano do fronty: **{track.title}** (`{track.source_name}`)",
+                preferred_channel=text_channel,
+            )
+        except commands.CommandError as error:
+            await send_interaction_text(interaction, str(error), ephemeral=True)
+
+
 class PlayerPanelView(discord.ui.View):
     def __init__(self, guild: discord.Guild):
         super().__init__(timeout=300)
@@ -1076,6 +1104,10 @@ class PlayerPanelView(discord.ui.View):
     async def refresh_panel(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         await refresh_guild_panel(self.guild)
+
+    @discord.ui.button(label="Play", style=discord.ButtonStyle.success)
+    async def play_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(PlayModal(self.guild))
 
     @discord.ui.button(label="Pause", style=discord.ButtonStyle.secondary)
     async def pause_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:

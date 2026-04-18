@@ -63,6 +63,12 @@ def install_test_stubs() -> None:
             async def edit_message(self, *args, **kwargs) -> None:
                 self._done = True
 
+            async def defer(self, *args, **kwargs) -> None:
+                self._done = True
+
+            async def send_modal(self, *args, **kwargs) -> None:
+                self._done = True
+
         class InteractionFollowup:
             async def send(self, *args, **kwargs) -> None:
                 return None
@@ -85,6 +91,23 @@ def install_test_stubs() -> None:
 
             def add_item(self, item) -> None:
                 self.items.append(item)
+
+        class Modal:
+            def __init_subclass__(cls, **kwargs) -> None:
+                return super().__init_subclass__()
+
+            def __init__(self, *args, **kwargs) -> None:
+                self.args = args
+                self.kwargs = kwargs
+
+        class TextInput:
+            def __init__(self, *args, **kwargs) -> None:
+                self.args = args
+                self.kwargs = kwargs
+                self.value = ""
+
+            def __str__(self) -> str:
+                return self.value
 
         class Select:
             def __init__(self, *args, **kwargs) -> None:
@@ -152,6 +175,8 @@ def install_test_stubs() -> None:
         discord_module.app_commands = app_commands_module
 
         ui_module.View = View
+        ui_module.Modal = Modal
+        ui_module.TextInput = TextInput
         ui_module.Select = Select
         ui_module.Button = Button
         ui_module.button = button
