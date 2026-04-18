@@ -135,3 +135,4 @@ python3 -m unittest discover -s tests
 - `slash_command_guild_ids` v `config.json` je seznam Discord server ID, kam se maji slash commandy synchronizovat okamzite po restartu, napr. `[123456789012345678]`.
 - V `command_aliases.json` jsou klice puvodni anglicke prikazy a hodnoty jsou seznamy aliasu. Puvodni anglicke prikazy zustavaji funkcni vzdycky.
 - `panel` otevre Discord GUI s tlacitky `Pause`, `Resume`, `Skip`, `Stop`, `Queue`, `Leave` a dropdownem na ulozena radia.
+- Panel je ted jeden hlavni zivy message: pri dalsim otevreni nebo akci se puvodni panel prepise, pripadne presune do noveho kanalu, misto aby pribyvaly dalsi stare zpravy.
