@@ -20,13 +20,36 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("diskzokej")
 
-COMMAND_PREFIX = "!"
-YTDL_OPTIONS = {
-    "format": "bestaudio/best",
-    "noplaylist": True,
-    "default_search": "ytsearch1",
-    "quiet": True,
-    "no_warnings": True,
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_FILE = BASE_DIR / "config.json"
+DEFAULT_CONFIG = {
+    "command_prefix": "!",
+    "idle_disconnect_timeout": 300,
+    "playback_start_timeout": 15,
+    "direct_media_suffixes": [
+        ".aac",
+        ".flac",
+        ".m3u",
+        ".m3u8",
+        ".m4a",
+        ".mp3",
+        ".mp4",
+        ".ogg",
+        ".oga",
+        ".opus",
+        ".wav",
+        ".webm",
+    ],
+    "ytdl_options": {
+        "format": "bestaudio/best",
+        "noplaylist": True,
+        "default_search": "ytsearch1",
+        "quiet": True,
+        "no_warnings": True,
+    },
+    "fallback_ytdl_options": {
+        "format": "best",
+    },
 }
 FFMPEG_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -282,7 +305,6 @@ fallback_ytdl = YoutubeDL(
         "format": "best",
     }
 )
-BASE_DIR = Path(__file__).resolve().parent
 RADIO_ALIASES_FILE = BASE_DIR / "radio_aliases.json"
 
 
