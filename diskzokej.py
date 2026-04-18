@@ -701,6 +701,12 @@ def get_queue_snapshot(player: Optional[GuildPlayer]) -> list[Track]:
     return list(player.queue._queue)
 
 
+def trim_for_field(value: str, limit: int = 1024) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
+
+
 def build_queue_text(player: Optional[GuildPlayer]) -> str:
     items = get_queue_snapshot(player)
     lines = []
@@ -726,60 +732,72 @@ def build_player_embed(guild: discord.Guild, player: Optional[GuildPlayer]) -> d
     status = "Pripraven."
     if panel_state and panel_state.last_status:
         status = panel_state.last_status
-    if len(status) > 1024:
-        status = status[:1021] + "..."
-    embed.add_field(name="Posledni akce", value=status, inline=False)
+    embed.add_field(name="Posledni akce", value=trim_for_field(status), inline=False)
 
     if player and player.current:
         embed.add_field(
             name="Prave hraje",
-            value=(
-                f"**{player.current.title}**\n"
-                f"Zdroj: `{player.current.source_name}`\n"
-                f"Pozadoval: `{player.current.requested_by}`\n"
-                f"{player.current.webpage_url}"
+            value=trim_for_field(
+                "\n".join(
+                    [
+                        f"**{player.current.title}**",
+                        f"`zdroj:` {player.current.source_name}",
+                        f"`zadal:` {player.current.requested_by}",
+                        player.current.webpage_url,
+                    ]
+                )
             ),
             inline=False,
         )
     else:
         embed.add_field(name="Prave hraje", value="Nic nehraje.", inline=False)
 
-    stats_lines = []
+    state_lines = []
     if player and player.voice_client and player.voice_client.is_connected():
-        stats_lines.append(f"Hlasovy kanal: `{player.voice_client.channel}`")
+        state_lines.append(f"`kanal:` {player.voice_client.channel}")
         if player.voice_client.is_paused():
-            stats_lines.append("Stav: `pauza`")
+            state_lines.append("`stav:` pauza")
         elif player.voice_client.is_playing():
-            stats_lines.append("Stav: `prehrava`")
+            state_lines.append("`stav:` prehrava")
         else:
-            stats_lines.append("Stav: `pripojen, ale nehraje`")
+            state_lines.append("`stav:` pripojen, ale nehraje")
         listeners = 0
         if player.voice_client.channel:
             listeners = sum(1 for member in player.voice_client.channel.members if not member.bot)
-        stats_lines.append(f"Posluchaci: `{listeners}`")
+        state_lines.append(f"`lidi:` {listeners}")
     else:
-        stats_lines.append("Hlasovy kanal: `nepripojen`")
+        state_lines.append("`kanal:` nepripojen")
+        state_lines.append("`stav:` idle")
 
     queue_items = get_queue_snapshot(player)
-    stats_lines.append(f"Polozek ve fronte: `{len(queue_items)}`")
-    embed.add_field(name="Stav", value="\n".join(stats_lines), inline=False)
+    state_lines.append(f"`fronta:` {len(queue_items)}")
+    embed.add_field(name="Stav", value=trim_for_field("\n".join(state_lines)), inline=True)
+
+    summary_lines = [
+        f"`prefix:` {COMMAND_PREFIX}",
+        f"`radia:` {len(radio_aliases)}",
+    ]
+    updated_text = "ted"
+    if panel_state and panel_state.last_updated is not None:
+        updated_text = panel_state.last_updated.strftime("%H:%M:%S")
+    summary_lines.append(f"`sync:` {updated_text}")
+    embed.add_field(name="Prehled", value="\n".join(summary_lines), inline=True)
 
     queue_text = build_queue_text(player)
-    if len(queue_text) > 1024:
-        queue_text = queue_text[:1021] + "..."
-    embed.add_field(name="Fronta", value=queue_text, inline=False)
+    embed.add_field(name="Fronta", value=trim_for_field(queue_text), inline=False)
 
     if queue_items:
         next_items = [
-            f"{index}. {track.title}"
+            f"`{index}.` {track.title}"
             for index, track in enumerate(queue_items[:5], start=1)
         ]
-        embed.add_field(name="Dalsi na rade", value="\n".join(next_items), inline=False)
+        embed.add_field(name="Dalsi na rade", value=trim_for_field("\n".join(next_items)), inline=False)
 
     controls_text = (
-        "`Pause` / `Resume` / `Skip` / `Stop`\n"
-        "`Refresh` / `Leave` / `Zavrit`\n"
-        "Radio vybires pres dropdown menu"
+        "`Play` prida skladbu pres popup\n"
+        "`Pause` `Resume` `Skip` `Stop`\n"
+        "`Refresh` `Leave` `Zavrit`\n"
+        "`Radio` vyberes z dropdown menu"
     )
     embed.add_field(name="Ovladani", value=controls_text, inline=False)
 
@@ -788,14 +806,8 @@ def build_player_embed(guild: discord.Guild, player: Optional[GuildPlayer]) -> d
         voice_state = f"Pripojen do `{player.voice_client.channel}`"
         if player.voice_client.is_paused():
             voice_state += " (pauza)"
-    updated_text = ""
-    if panel_state and panel_state.last_updated is not None:
-        updated_text = panel_state.last_updated.strftime("%H:%M:%S")
     embed.set_footer(
-        text=(
-            f"Prefix: {COMMAND_PREFIX} | {voice_state}"
-            + (f" | Aktualizace: {updated_text}" if updated_text else "")
-        )
+        text=f"{voice_state} | Panel se automaticky obnovuje"
     )
     return embed
 
@@ -1070,12 +1082,13 @@ class PlayModal(discord.ui.Modal, title="Pustit hudbu"):
         self.guild = guild
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
         try:
             guild = require_interaction_guild(interaction)
             member = require_interaction_member(interaction)
             text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-            track = await enqueue_play_request(guild, member, str(self.query), text_channel)
-            await interaction.response.defer()
+            query_value = getattr(self.query, "value", None) or str(self.query)
+            track = await enqueue_play_request(guild, member, query_value, text_channel)
             await update_panel_status(
                 guild,
                 f"Pridano do fronty: **{track.title}** (`{track.source_name}`)",
@@ -1083,6 +1096,17 @@ class PlayModal(discord.ui.Modal, title="Pustit hudbu"):
             )
         except commands.CommandError as error:
             await send_interaction_text(interaction, str(error), ephemeral=True)
+        except Exception as error:
+            LOGGER.exception("Play modal selhal", exc_info=error)
+            guild = interaction.guild
+            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
+            if guild is not None:
+                await update_panel_status(
+                    guild,
+                    "Nepodarilo se pridat skladbu z popup formulare.",
+                    preferred_channel=text_channel,
+                )
+            await send_interaction_text(interaction, "Nepodarilo se pridat skladbu.", ephemeral=True)
 
 
 class PlayerPanelView(discord.ui.View):
