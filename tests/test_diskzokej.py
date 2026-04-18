@@ -26,6 +26,11 @@ def install_test_stubs() -> None:
                 self.args = args
                 self.kwargs = kwargs
 
+        class PCMVolumeTransformer:
+            def __init__(self, source, volume=1.0) -> None:
+                self.source = source
+                self.volume = volume
+
         class Embed:
             def __init__(self, *args, **kwargs) -> None:
                 self.args = args
@@ -159,6 +164,7 @@ def install_test_stubs() -> None:
 
         discord_module.Intents = Intents
         discord_module.FFmpegPCMAudio = FFmpegPCMAudio
+        discord_module.PCMVolumeTransformer = PCMVolumeTransformer
         discord_module.Embed = Embed
         discord_module.SelectOption = SelectOption
         discord_module.ButtonStyle = ButtonStyle

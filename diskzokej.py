@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 import json
 import logging
 import os
@@ -28,6 +29,7 @@ COMMAND_ALIASES_FILE = BASE_DIR / "command_aliases.json"
 DEFAULT_CONFIG = {
     "command_prefix": "!",
     "slash_command_guild_ids": [],
+    "default_volume_percent": 100,
     "idle_disconnect_timeout": 300,
     "playback_start_timeout": 15,
     "direct_media_suffixes": [
@@ -132,6 +134,10 @@ IDLE_DISCONNECT_TIMEOUT = int(
 )
 PLAYBACK_START_TIMEOUT = int(
     CONFIG.get("playback_start_timeout", DEFAULT_CONFIG["playback_start_timeout"])
+)
+DEFAULT_VOLUME_PERCENT = max(
+    0,
+    min(200, int(CONFIG.get("default_volume_percent", DEFAULT_CONFIG["default_volume_percent"]))),
 )
 DIRECT_MEDIA_SUFFIXES = {
     str(suffix).lower()
@@ -307,6 +313,9 @@ class GuildPlayer:
         self.voice_client: Optional[discord.VoiceClient] = None
         self.current: Optional[Track] = None
         self.text_channel: Optional[discord.TextChannel] = None
+        self.current_source = None
+        self.volume = DEFAULT_VOLUME_PERCENT / 100.0
+        self.history: deque[str] = deque(maxlen=3)
         self.player_task = bot.loop.create_task(self.player_loop())
 
     async def send_status(self, message: str) -> None:
@@ -326,6 +335,17 @@ class GuildPlayer:
         if self.voice_client and self.voice_client.is_connected():
             await self.voice_client.disconnect()
         self.voice_client = None
+        self.current_source = None
+
+    def set_volume(self, volume: float) -> int:
+        self.volume = max(0.0, min(2.0, volume))
+        source = getattr(self.voice_client, "source", None)
+        if source is not None and hasattr(source, "volume"):
+            source.volume = self.volume
+        return int(round(self.volume * 100))
+
+    def change_volume(self, delta: float) -> int:
+        return self.set_volume(self.volume + delta)
 
     async def wait_for_playback_start(
         self,
@@ -393,7 +413,8 @@ class GuildPlayer:
                         executable=FFMPEG_EXECUTABLE,
                         **FFMPEG_OPTIONS,
                     )
-                    self.voice_client.play(source, after=after_playback)
+                    self.current_source = discord.PCMVolumeTransformer(source, volume=self.volume)
+                    self.voice_client.play(self.current_source, after=after_playback)
                     await self.wait_for_playback_start(track, finished)
                     await finished.wait()
                 except asyncio.CancelledError:
@@ -417,6 +438,9 @@ class GuildPlayer:
                 finally:
                     if self.voice_client and self.voice_client.is_playing():
                         self.voice_client.stop()
+                    if track is not None:
+                        self.history.appendleft(track.title)
+                    self.current_source = None
                     self.current = None
                     if track is not None:
                         self.queue.task_done()
@@ -707,6 +731,19 @@ def trim_for_field(value: str, limit: int = 1024) -> str:
     return value[: limit - 3] + "..."
 
 
+def get_panel_color(player: Optional[GuildPlayer], status: str) -> int:
+    lowered = status.lower()
+    if "chyb" in lowered or "nepodarilo" in lowered or "spadlo" in lowered:
+        return 0xD64545
+    if player and player.voice_client and player.voice_client.is_connected():
+        if player.voice_client.is_paused():
+            return 0xD9A441
+        if player.voice_client.is_playing():
+            return 0x2E9E5B
+        return 0x4C6EF5
+    return 0x6C757D
+
+
 def build_queue_text(player: Optional[GuildPlayer]) -> str:
     items = get_queue_snapshot(player)
     lines = []
@@ -723,15 +760,16 @@ def build_queue_text(player: Optional[GuildPlayer]) -> str:
 
 
 def build_player_embed(guild: discord.Guild, player: Optional[GuildPlayer]) -> discord.Embed:
-    embed = discord.Embed(
-        title="Diskzokej",
-        description="Zivy ovladaci panel prehravani",
-    )
     panel_state = get_panel_state(guild)
-
     status = "Pripraven."
     if panel_state and panel_state.last_status:
         status = panel_state.last_status
+
+    embed = discord.Embed(
+        title="Diskzokej",
+        description="Zivy ovladaci panel prehravani",
+        color=get_panel_color(player, status),
+    )
     embed.add_field(name="Posledni akce", value=trim_for_field(status), inline=False)
 
     if player and player.current:
@@ -776,6 +814,7 @@ def build_player_embed(guild: discord.Guild, player: Optional[GuildPlayer]) -> d
     summary_lines = [
         f"`prefix:` {COMMAND_PREFIX}",
         f"`radia:` {len(radio_aliases)}",
+        f"`volume:` {int(round((player.volume if player else DEFAULT_VOLUME_PERCENT / 100.0) * 100))}%",
     ]
     updated_text = "ted"
     if panel_state and panel_state.last_updated is not None:
@@ -786,20 +825,12 @@ def build_player_embed(guild: discord.Guild, player: Optional[GuildPlayer]) -> d
     queue_text = build_queue_text(player)
     embed.add_field(name="Fronta", value=trim_for_field(queue_text), inline=False)
 
-    if queue_items:
-        next_items = [
-            f"`{index}.` {track.title}"
-            for index, track in enumerate(queue_items[:5], start=1)
-        ]
-        embed.add_field(name="Dalsi na rade", value=trim_for_field("\n".join(next_items)), inline=False)
-
-    controls_text = (
-        "`Play` prida skladbu pres popup\n"
-        "`Pause` `Resume` `Skip` `Stop`\n"
-        "`Refresh` `Leave` `Zavrit`\n"
-        "`Radio` vyberes z dropdown menu"
-    )
-    embed.add_field(name="Ovladani", value=controls_text, inline=False)
+    history_lines = []
+    if player and player.history:
+        history_lines = [f"`{index}.` {title}" for index, title in enumerate(player.history, start=1)]
+    else:
+        history_lines = ["Zatim nic nedohralo."]
+    embed.add_field(name="Mini historie", value=trim_for_field("\n".join(history_lines)), inline=False)
 
     voice_state = "Nepripojen"
     if player and player.voice_client and player.voice_client.is_connected():
@@ -953,6 +984,13 @@ async def leave_player(guild: discord.Guild, member: discord.Member) -> str:
     ensure_same_voice_channel(player, member)
     await player.cleanup()
     return "Odpojeno z hlasoveho kanalu."
+
+
+async def change_player_volume(guild: discord.Guild, member: discord.Member, delta: float) -> str:
+    player = get_player_for_control(guild)
+    ensure_same_voice_channel(player, member)
+    volume_percent = player.change_volume(delta)
+    return f"Nastavuju hlasitost na {volume_percent}%."
 
 
 def build_radios_text() -> str:
@@ -1132,6 +1170,30 @@ class PlayerPanelView(discord.ui.View):
     @discord.ui.button(label="Play", style=discord.ButtonStyle.success)
     async def play_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(PlayModal(self.guild))
+
+    @discord.ui.button(label="-", style=discord.ButtonStyle.secondary)
+    async def volume_down_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        try:
+            guild = require_interaction_guild(interaction)
+            member = require_interaction_member(interaction)
+            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
+            status = await change_player_volume(guild, member, -0.1)
+            await interaction.response.defer()
+            await update_panel_status(guild, status, preferred_channel=text_channel)
+        except commands.CommandError as error:
+            await send_interaction_text(interaction, str(error), ephemeral=True)
+
+    @discord.ui.button(label="+", style=discord.ButtonStyle.secondary)
+    async def volume_up_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        try:
+            guild = require_interaction_guild(interaction)
+            member = require_interaction_member(interaction)
+            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
+            status = await change_player_volume(guild, member, 0.1)
+            await interaction.response.defer()
+            await update_panel_status(guild, status, preferred_channel=text_channel)
+        except commands.CommandError as error:
+            await send_interaction_text(interaction, str(error), ephemeral=True)
 
     @discord.ui.button(label="Pause", style=discord.ButtonStyle.secondary)
     async def pause_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
