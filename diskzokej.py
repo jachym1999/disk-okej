@@ -22,11 +22,15 @@ LOGGER = logging.getLogger("diskzokej")
 
 COMMAND_PREFIX = "!"
 YTDL_OPTIONS = {
-    "format": "bestaudio/best",
     "noplaylist": True,
     "default_search": "ytsearch1",
     "quiet": True,
     "no_warnings": True,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "web", "tv_embedded"],
+        }
+    },
 }
 FFMPEG_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -158,13 +162,6 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
 players: Dict[int, GuildPlayer] = {}
-ytdl = YoutubeDL(YTDL_OPTIONS)
-fallback_ytdl = YoutubeDL(
-    {
-        **YTDL_OPTIONS,
-        "format": "best",
-    }
-)
 BASE_DIR = Path(__file__).resolve().parent
 RADIO_ALIASES_FILE = BASE_DIR / "radio_aliases.json"
 
@@ -260,14 +257,23 @@ async def run_blocking(func, *args):
 async def extract_track(query: str, requested_by: str) -> Track:
     def _extract() -> dict:
         search_term = query if looks_like_url(query) else f"ytsearch1:{query}"
-        try:
-            return ytdl.extract_info(search_term, download=False)
-        except DownloadError as error:
-            message = str(error)
-            if "Requested format is not available" not in message:
-                raise
-            LOGGER.warning("Primarni audio format neni dostupny, zkousim fallback `best`.")
-            return fallback_ytdl.extract_info(search_term, download=False)
+        last_error = None
+        format_candidates = ["bestaudio/best", "best", "bestvideo+bestaudio/best", None]
+
+        for format_name in format_candidates:
+            options = dict(YTDL_OPTIONS)
+            if format_name:
+                options["format"] = format_name
+
+            try:
+                return YoutubeDL(options).extract_info(search_term, download=False)
+            except DownloadError as error:
+                last_error = error
+                LOGGER.warning("yt-dlp selhalo pro format %s: %s", format_name or "default", error)
+
+        if last_error:
+            raise last_error
+        raise commands.CommandError("Nepodarilo se nacist metadata videa.")
 
     try:
         data = await run_blocking(_extract)
