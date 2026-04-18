@@ -717,7 +717,10 @@ def build_queue_text(player: Optional[GuildPlayer]) -> str:
 
 
 def build_player_embed(guild: discord.Guild, player: Optional[GuildPlayer]) -> discord.Embed:
-    embed = discord.Embed(title="Diskzokej Panel")
+    embed = discord.Embed(
+        title="Diskzokej",
+        description="Zivy ovladaci panel prehravani",
+    )
     panel_state = get_panel_state(guild)
 
     status = "Pripraven."
@@ -773,19 +776,10 @@ def build_player_embed(guild: discord.Guild, player: Optional[GuildPlayer]) -> d
         ]
         embed.add_field(name="Dalsi na rade", value="\n".join(next_items), inline=False)
 
-    if radio_aliases:
-        radios_text = "\n".join(
-            f"`{alias}` -> {radio_aliases[alias]}"
-            for alias in sorted(radio_aliases)[:8]
-        )
-        if len(radios_text) > 1024:
-            radios_text = radios_text[:1021] + "..."
-        embed.add_field(name="Ulozena radia", value=radios_text, inline=False)
-
     controls_text = (
-        "`Pause` / `Resume` / `Skip` / `Stop` / `Leave`\n"
-        "`Dropdown` pro radia\n"
-        f"`{COMMAND_PREFIX}panel` nebo `/panel` pro obnoveni panelu"
+        "`Pause` / `Resume` / `Skip` / `Stop`\n"
+        "`Refresh` / `Leave` / `Zavrit`\n"
+        "Radio vybires pres dropdown menu"
     )
     embed.add_field(name="Ovladani", value=controls_text, inline=False)
 
@@ -1153,6 +1147,22 @@ class PlayerPanelView(discord.ui.View):
         except commands.CommandError as error:
             await send_interaction_text(interaction, str(error), ephemeral=True)
 
+    @discord.ui.button(label="Zavrit", style=discord.ButtonStyle.danger)
+    async def close_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        guild = require_interaction_guild(interaction)
+        state = get_panel_state(guild)
+        state.last_status = "Panel zavren."
+        state.last_updated = datetime.now()
+        state.channel = None
+        message = getattr(interaction, "message", None) or state.message
+        state.message = None
+        await interaction.response.defer()
+        if message is not None:
+            try:
+                await message.delete()
+            except Exception:
+                pass
+
 
 async def send_player_panel(
     destination: commands.Context | discord.Interaction,
@@ -1499,13 +1509,21 @@ async def panel_slash(interaction: discord.Interaction) -> None:
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+    guild = interaction.guild
+    text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
     if isinstance(error, app_commands.CommandInvokeError) and isinstance(error.original, commands.CommandError):
+        if guild is not None:
+            await update_panel_status(guild, str(error.original), preferred_channel=text_channel)
         await send_interaction_text(interaction, str(error.original), ephemeral=True)
         return
     if isinstance(error, commands.CommandError):
+        if guild is not None:
+            await update_panel_status(guild, str(error), preferred_channel=text_channel)
         await send_interaction_text(interaction, str(error), ephemeral=True)
         return
     LOGGER.exception("Neocekavana chyba ve slash commandu", exc_info=error)
+    if guild is not None:
+        await update_panel_status(guild, "Doslo k neocekavane chybe.", preferred_channel=text_channel)
     await send_interaction_text(interaction, "Doslo k neocekavane chybe.", ephemeral=True)
 
 
@@ -1514,14 +1532,35 @@ async def on_command_error(ctx: commands.Context, error: Exception) -> None:
     if isinstance(error, commands.CommandNotFound):
         return
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"Chybi parametr prikazu. Pouzij `{COMMAND_PREFIX}help`.")
+        if ctx.guild is not None:
+            await update_panel_status(
+                ctx.guild,
+                f"Chybi parametr prikazu. Pouzij `{COMMAND_PREFIX}help`.",
+                preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
+            )
+        else:
+            await ctx.send(f"Chybi parametr prikazu. Pouzij `{COMMAND_PREFIX}help`.")
         return
     if isinstance(error, commands.CommandError):
-        await ctx.send(str(error))
+        if ctx.guild is not None:
+            await update_panel_status(
+                ctx.guild,
+                str(error),
+                preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
+            )
+        else:
+            await ctx.send(str(error))
         return
 
     LOGGER.exception("Neocekavana chyba", exc_info=error)
-    await ctx.send("Doslo k neocekavane chybe.")
+    if ctx.guild is not None:
+        await update_panel_status(
+            ctx.guild,
+            "Doslo k neocekavane chybe.",
+            preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
+        )
+    else:
+        await ctx.send("Doslo k neocekavane chybe.")
 
 
 def main() -> None:
