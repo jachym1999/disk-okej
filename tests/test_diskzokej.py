@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import tempfile
@@ -146,12 +147,18 @@ def install_test_stubs() -> None:
         class CommandTree:
             def __init__(self) -> None:
                 self.copied_guilds = []
+                self.cleared_guilds = []
+                self.synced_guilds = []
 
             async def sync(self, *args, **kwargs):
+                self.synced_guilds.append(kwargs.get("guild"))
                 return []
 
             def copy_global_to(self, guild):
                 self.copied_guilds.append(guild)
+
+            def clear_commands(self, *args, **kwargs):
+                self.cleared_guilds.append(kwargs.get("guild"))
 
             def command(self, *args, **kwargs):
                 def decorator(func):
@@ -319,6 +326,102 @@ class DiskzokejHelpersTest(unittest.TestCase):
     def test_is_direct_media_url_checks_suffix_case_insensitively(self) -> None:
         self.assertTrue(diskzokej.is_direct_media_url("https://cdn.example.com/live/stream.MP3"))
         self.assertFalse(diskzokej.is_direct_media_url("https://example.com/watch?v=123"))
+
+    def test_is_youtube_playlist_url_accepts_playlist_links(self) -> None:
+        self.assertTrue(
+            diskzokej.is_youtube_playlist_url("https://www.youtube.com/playlist?list=abc")
+        )
+        self.assertTrue(
+            diskzokej.is_youtube_playlist_url("https://music.youtube.com/playlist?list=abc")
+        )
+
+    def test_is_youtube_playlist_url_rejects_video_and_search_queries(self) -> None:
+        self.assertFalse(
+            diskzokej.is_youtube_playlist_url("https://www.youtube.com/watch?v=abc")
+        )
+        self.assertFalse(diskzokej.is_youtube_playlist_url("drink jako panak"))
+
+    def test_format_play_enqueue_status_counts_playlist_tracks(self) -> None:
+        tracks = [
+            diskzokej.Track("prvni", "https://example.com/1", "https://media.example.com/1", "Tester", "Youtube"),
+            diskzokej.Track("druha", "https://example.com/2", "https://media.example.com/2", "Tester", "Youtube"),
+        ]
+
+        self.assertEqual(
+            diskzokej.format_play_enqueue_status(tracks),
+            "Pridano do fronty 2 skladeb z playlistu.",
+        )
+
+    def test_is_player_panel_message_matches_own_panel_embed(self) -> None:
+        original_user = getattr(diskzokej.bot, "user", None)
+        diskzokej.bot.user = types.SimpleNamespace(id=123)
+        try:
+            message = types.SimpleNamespace(
+                author=types.SimpleNamespace(id=123),
+                embeds=[types.SimpleNamespace(title="Diskzokej")],
+            )
+
+            self.assertTrue(diskzokej.is_player_panel_message(message))
+        finally:
+            diskzokej.bot.user = original_user
+
+    def test_is_player_panel_message_ignores_other_messages(self) -> None:
+        original_user = getattr(diskzokej.bot, "user", None)
+        diskzokej.bot.user = types.SimpleNamespace(id=123)
+        try:
+            other_author_message = types.SimpleNamespace(
+                author=types.SimpleNamespace(id=456),
+                embeds=[types.SimpleNamespace(title="Diskzokej")],
+            )
+            other_embed_message = types.SimpleNamespace(
+                author=types.SimpleNamespace(id=123),
+                embeds=[types.SimpleNamespace(title="Jiny embed")],
+            )
+
+            self.assertFalse(diskzokej.is_player_panel_message(other_author_message))
+            self.assertFalse(diskzokej.is_player_panel_message(other_embed_message))
+        finally:
+            diskzokej.bot.user = original_user
+
+    def test_sync_application_commands_uses_global_sync_without_guild_ids(self) -> None:
+        original_ids = diskzokej.SLASH_COMMAND_GUILD_IDS
+        original_tree = diskzokej.bot.tree
+        diskzokej.SLASH_COMMAND_GUILD_IDS = []
+        diskzokej.bot.tree = diskzokej.commands.Bot().tree
+        try:
+            asyncio.run(diskzokej.sync_application_commands())
+
+            self.assertEqual(diskzokej.bot.tree.synced_guilds, [None])
+            self.assertEqual(diskzokej.bot.tree.cleared_guilds, [])
+            self.assertEqual(diskzokej.bot.tree.copied_guilds, [])
+        finally:
+            diskzokej.SLASH_COMMAND_GUILD_IDS = original_ids
+            diskzokej.bot.tree = original_tree
+
+    def test_sync_application_commands_clears_global_when_guild_ids_are_used(self) -> None:
+        original_ids = diskzokej.SLASH_COMMAND_GUILD_IDS
+        original_tree = diskzokej.bot.tree
+        diskzokej.SLASH_COMMAND_GUILD_IDS = [111, 222]
+        diskzokej.bot.tree = diskzokej.commands.Bot().tree
+        try:
+            asyncio.run(diskzokej.sync_application_commands())
+
+            copied_ids = [guild.id for guild in diskzokej.bot.tree.copied_guilds]
+            synced_ids = [
+                getattr(guild, "id", None)
+                for guild in diskzokej.bot.tree.synced_guilds
+            ]
+            cleared_ids = [
+                getattr(guild, "id", None)
+                for guild in diskzokej.bot.tree.cleared_guilds
+            ]
+
+            self.assertEqual(copied_ids, [111, 222])
+            self.assertEqual(synced_ids, [None, 111, 222])
+            self.assertEqual(cleared_ids, [None, 111, 222])
+        finally:
+            diskzokej.SLASH_COMMAND_GUILD_IDS = original_ids
+            diskzokej.bot.tree = original_tree
 
     def test_pick_first_entry_returns_first_playable_nested_entry(self) -> None:
         data = {

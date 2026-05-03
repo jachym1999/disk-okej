@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import discord
 from discord import app_commands
@@ -162,6 +162,8 @@ CANONICAL_COMMANDS = (
     "help",
     "panel",
 )
+PANEL_EMBED_TITLE = "Diskzokej"
+PANEL_HISTORY_SEARCH_LIMIT = 50
 
 
 def looks_like_url(value: str) -> bool:
@@ -282,7 +284,7 @@ def format_slash_label(command_name: str) -> str:
 def build_help_text() -> str:
     return (
         "Napoveda k botovi:\n"
-        f"`{format_command_label('play')} <odkaz nebo hledany text>` nebo `{format_slash_label('play')}` - prida skladbu nebo audio do fronty. Text se hleda na YouTube.\n"
+        f"`{format_command_label('play')} <odkaz nebo hledany text>` nebo `{format_slash_label('play')}` - prida skladbu, audio, nebo cely YouTube playlist do fronty. Text se hleda na YouTube.\n"
         f"`{format_command_label('radio')} <stream_url> [alias]` nebo `{format_slash_label('radio')}` - prida radio stream do fronty a volitelne ulozi alias.\n"
         f"`{COMMAND_PREFIX}radio <alias>` - spusti drive ulozene radio podle aliasu.\n"
         f"`{format_command_label('radios')}` nebo `{format_slash_label('radios')}` - vypise vsechna ulozena radia a jejich adresy.\n"
@@ -298,6 +300,7 @@ def build_help_text() -> str:
         f"Aktivni prefix: `{COMMAND_PREFIX}`\n"
         "Priklady:\n"
         f"`{COMMAND_PREFIX}play never gonna give you up`\n"
+        f"`{COMMAND_PREFIX}play https://www.youtube.com/playlist?list=...`\n"
         f"`{COMMAND_PREFIX}radio https://stream.example.com/live.mp3 beat`\n"
         f"`{COMMAND_PREFIX}panel`\n"
         "`/play query:never gonna give you up`\n"
@@ -607,6 +610,25 @@ def pick_first_entry(data: dict) -> Optional[dict]:
     return None
 
 
+def is_youtube_playlist_url(value: str) -> bool:
+    if not looks_like_url(value):
+        return False
+
+    parsed = urlparse(value)
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host not in {"youtube.com", "music.youtube.com"}:
+        return False
+
+    query_values = parse_qs(parsed.query)
+    if "list" not in query_values:
+        return False
+
+    path = parsed.path.rstrip("/")
+    return path == "/playlist" or (path == "/watch" and "v" not in query_values)
+
+
 def detect_source_name(data: dict, query: str) -> str:
     extractor = data.get("extractor_key") or data.get("extractor")
     if extractor:
@@ -627,7 +649,27 @@ def create_direct_media_track(url: str, requested_by: str) -> Track:
     )
 
 
-async def extract_track(query: str, requested_by: str) -> Track:
+def create_track_from_data(data: dict, query: str, requested_by: str) -> Track:
+    stream_url = data.get("url")
+    webpage_url = data.get("webpage_url") or data.get("original_url")
+    title = data.get("title") or "Neznamy nazev"
+    source_name = detect_source_name(data, query)
+
+    if not stream_url or not webpage_url:
+        if looks_like_url(query) and is_direct_media_url(query):
+            return create_direct_media_track(query, requested_by)
+        raise commands.CommandError("Nepodarilo se ziskat prehravaci odkaz.")
+
+    return Track(
+        title=title,
+        webpage_url=webpage_url,
+        stream_url=stream_url,
+        requested_by=requested_by,
+        source_name=source_name,
+    )
+
+
+async def extract_track(query: str, requested_by: str, *, allow_playlist: bool = False) -> Track | list[Track]:
     def _extract() -> dict:
         search_term = query if looks_like_url(query) else f"ytsearch1:{query}"
         last_error = None
@@ -635,6 +677,9 @@ async def extract_track(query: str, requested_by: str) -> Track:
 
         for format_name in format_candidates:
             options = dict(YTDL_OPTIONS)
+            options["noplaylist"] = not allow_playlist
+            if allow_playlist:
+                options["extract_flat"] = False
             if format_name:
                 options["format"] = format_name
 
@@ -659,6 +704,19 @@ async def extract_track(query: str, requested_by: str) -> Track:
             "Nepodarilo se nacist zadany odkaz. YouTube vyhledavani je prioritni, ostatni weby funguji jen pokud je umi zpracovat yt-dlp nebo jde o primy stream."
         )
     if "entries" in data:
+        if allow_playlist:
+            tracks = []
+            for entry in data.get("entries") or []:
+                if not entry:
+                    continue
+                try:
+                    tracks.append(create_track_from_data(entry, query, requested_by))
+                except commands.CommandError:
+                    LOGGER.debug("Preskakuju nepouzitelnou polozku playlistu.", exc_info=True)
+            if tracks:
+                return tracks
+            raise commands.CommandError("Z playlistu se nepodarilo ziskat zadne prehravatelne skladby.")
+
         picked_entry = pick_first_entry(data)
         if not picked_entry:
             if looks_like_url(query):
@@ -668,23 +726,7 @@ async def extract_track(query: str, requested_by: str) -> Track:
             raise commands.CommandError("Na YouTube jsem nic nenasel.")
         data = picked_entry
 
-    stream_url = data.get("url")
-    webpage_url = data.get("webpage_url") or data.get("original_url")
-    title = data.get("title") or "Neznamy nazev"
-    source_name = detect_source_name(data, query)
-
-    if not stream_url or not webpage_url:
-        if looks_like_url(query) and is_direct_media_url(query):
-            return create_direct_media_track(query, requested_by)
-        raise commands.CommandError("Nepodarilo se ziskat prehravaci odkaz.")
-
-    return Track(
-        title=title,
-        webpage_url=webpage_url,
-        stream_url=stream_url,
-        requested_by=requested_by,
-        source_name=source_name,
-    )
+    return create_track_from_data(data, query, requested_by)
 
 
 def create_radio_track(stream_url: str, requested_by: str) -> Track:
@@ -903,15 +945,32 @@ async def enqueue_play_request(
     member: discord.Member,
     query: str,
     text_channel: Optional[discord.TextChannel],
-) -> Track:
+) -> list[Track]:
     if not FFMPEG_EXECUTABLE:
         raise commands.CommandError(
             "FFmpeg nebyl nalezen. Nainstaluj ho a restartuj terminal nebo PC."
         )
+    cleaned_query = query.strip()
+    playlist_requested = is_youtube_playlist_url(cleaned_query)
+
     player = await ensure_voice_for_member(guild, member, text_channel)
-    track = await extract_track(query, member.display_name)
-    await player.queue.put(track)
-    return track
+    result = await extract_track(
+        cleaned_query,
+        member.display_name,
+        allow_playlist=playlist_requested,
+    )
+    tracks = result if isinstance(result, list) else [result]
+    for track in tracks:
+        await player.queue.put(track)
+    return tracks
+
+
+def format_play_enqueue_status(tracks: list[Track]) -> str:
+    if len(tracks) == 1:
+        track = tracks[0]
+        return f"Pridano do fronty: **{track.title}** (`{track.source_name}`)"
+
+    return f"Pridano do fronty {len(tracks)} skladeb z playlistu."
 
 
 async def enqueue_radio_request(
@@ -1000,6 +1059,42 @@ def build_radios_text() -> str:
     return "Ulozena radia:\n" + "\n".join(lines)
 
 
+def is_player_panel_message(message: Any) -> bool:
+    bot_user = getattr(bot, "user", None)
+    author = getattr(message, "author", None)
+    if bot_user is not None and getattr(author, "id", None) != getattr(bot_user, "id", None):
+        return False
+
+    embeds = getattr(message, "embeds", None) or []
+    if not embeds:
+        return False
+
+    return getattr(embeds[0], "title", None) == PANEL_EMBED_TITLE
+
+
+async def find_existing_panel_message(channel: discord.TextChannel) -> Any:
+    found_messages = []
+    try:
+        async for message in channel.history(limit=PANEL_HISTORY_SEARCH_LIMIT):
+            if is_player_panel_message(message):
+                found_messages.append(message)
+    except Exception:
+        LOGGER.debug("Nepodarilo se projit historii kanalu kvuli hledani panelu.", exc_info=True)
+        return None
+
+    if not found_messages:
+        return None
+
+    message_to_keep = found_messages[0]
+    for duplicate in found_messages[1:]:
+        try:
+            await duplicate.delete()
+        except Exception:
+            LOGGER.debug("Nepodarilo se smazat starsi duplicitni panel.", exc_info=True)
+
+    return message_to_keep
+
+
 async def refresh_guild_panel(
     guild: discord.Guild,
     *,
@@ -1018,6 +1113,9 @@ async def refresh_guild_panel(
     player = find_player(guild)
     embed = build_player_embed(guild, player)
     view = PlayerPanelView(guild)
+
+    if state.message is None:
+        state.message = await find_existing_panel_message(channel)
 
     if (
         preferred_channel is not None
@@ -1126,10 +1224,10 @@ class PlayModal(discord.ui.Modal, title="Pustit hudbu"):
             member = require_interaction_member(interaction)
             text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
             query_value = getattr(self.query, "value", None) or str(self.query)
-            track = await enqueue_play_request(guild, member, query_value, text_channel)
+            tracks = await enqueue_play_request(guild, member, query_value, text_channel)
             await update_panel_status(
                 guild,
-                f"Pridano do fronty: **{track.title}** (`{track.source_name}`)",
+                format_play_enqueue_status(tracks),
                 preferred_channel=text_channel,
             )
         except commands.CommandError as error:
@@ -1292,7 +1390,6 @@ async def send_player_panel(
             guild,
             "Panel otevren.",
             preferred_channel=preferred_channel,
-            force_new_message=preferred_channel is not None,
         )
         return
 
@@ -1303,8 +1400,29 @@ async def send_player_panel(
         guild,
         "Panel otevren.",
         preferred_channel=preferred_channel,
-        force_new_message=preferred_channel is not None,
     )
+
+
+async def sync_application_commands() -> None:
+    if not SLASH_COMMAND_GUILD_IDS:
+        synced_commands = await bot.tree.sync()
+        LOGGER.info("Sesynchronizovano globalnich slash commandu: %s", len(synced_commands))
+        return
+
+    bot.tree.clear_commands(guild=None)
+    synced_global = await bot.tree.sync()
+    LOGGER.info("Vymazano globalnich slash commandu kvuli guild synchronizaci: %s", len(synced_global))
+
+    for guild_id in SLASH_COMMAND_GUILD_IDS:
+        guild_object = discord.Object(id=guild_id)
+        bot.tree.clear_commands(guild=guild_object)
+        bot.tree.copy_global_to(guild=guild_object)
+        guild_commands = await bot.tree.sync(guild=guild_object)
+        LOGGER.info(
+            "Sesynchronizovano slash commandu pro guild %s: %s",
+            guild_id,
+            len(guild_commands),
+        )
 
 
 @bot.event
@@ -1313,18 +1431,7 @@ async def on_ready() -> None:
     LOGGER.info("Bot pripojen jako %s", bot.user)
     if not tree_synced:
         try:
-            synced_commands = await bot.tree.sync()
-            LOGGER.info("Sesynchronizovano globalnich slash commandu: %s", len(synced_commands))
-
-            for guild_id in SLASH_COMMAND_GUILD_IDS:
-                guild_object = discord.Object(id=guild_id)
-                bot.tree.copy_global_to(guild=guild_object)
-                guild_commands = await bot.tree.sync(guild=guild_object)
-                LOGGER.info(
-                    "Sesynchronizovano slash commandu pro guild %s: %s",
-                    guild_id,
-                    len(guild_commands),
-                )
+            await sync_application_commands()
         except Exception as error:
             LOGGER.exception("Synchronizace slash commandu selhala", exc_info=error)
         tree_synced = True
@@ -1336,7 +1443,7 @@ async def play(ctx: commands.Context, *, query: str) -> None:
         raise commands.CommandError("Tenhle bot funguje jen na serveru.")
     guild = require_guild(ctx)
     text_channel = ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None
-    track = await enqueue_play_request(
+    tracks = await enqueue_play_request(
         guild,
         ctx.author,
         query,
@@ -1344,7 +1451,7 @@ async def play(ctx: commands.Context, *, query: str) -> None:
     )
     await update_panel_status(
         guild,
-        f"Pridano do fronty: **{track.title}** (`{track.source_name}`)",
+        format_play_enqueue_status(tracks),
         preferred_channel=text_channel,
     )
 
@@ -1481,16 +1588,16 @@ async def panel_cmd(ctx: commands.Context) -> None:
     await send_player_panel(ctx, require_guild(ctx))
 
 
-@bot.tree.command(name="play", description="Prida skladbu nebo odkaz do fronty")
-@app_commands.describe(query="Hledany text nebo URL")
+@bot.tree.command(name="play", description="Prida skladbu, odkaz, nebo YouTube playlist do fronty")
+@app_commands.describe(query="Hledany text, URL skladby, nebo URL YouTube playlistu")
 async def play_slash(interaction: discord.Interaction, query: str) -> None:
     guild = require_interaction_guild(interaction)
     member = require_interaction_member(interaction)
     text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-    track = await enqueue_play_request(guild, member, query, text_channel)
+    tracks = await enqueue_play_request(guild, member, query, text_channel)
     await update_panel_status(
         guild,
-        f"Pridano do fronty: **{track.title}** (`{track.source_name}`)",
+        format_play_enqueue_status(tracks),
         preferred_channel=text_channel,
     )
     await send_interaction_text(
