@@ -334,6 +334,11 @@ class DiskzokejHelpersTest(unittest.TestCase):
         self.assertTrue(
             diskzokej.is_youtube_playlist_url("https://music.youtube.com/playlist?list=abc")
         )
+        self.assertTrue(
+            diskzokej.is_youtube_playlist_url(
+                "https://www.youtube.com/watch?v=qU0_tfLe_f8&list=RDEMJRkAOj1KA-D40XdeTzhbbw&start_radio=1"
+            )
+        )
 
     def test_is_youtube_playlist_url_rejects_video_and_search_queries(self) -> None:
         self.assertFalse(

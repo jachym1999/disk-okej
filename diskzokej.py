@@ -618,15 +618,11 @@ def is_youtube_playlist_url(value: str) -> bool:
     host = parsed.netloc.lower()
     if host.startswith("www."):
         host = host[4:]
-    if host not in {"youtube.com", "music.youtube.com"}:
+    if host not in {"youtube.com", "music.youtube.com", "youtu.be"}:
         return False
 
     query_values = parse_qs(parsed.query)
-    if "list" not in query_values:
-        return False
-
-    path = parsed.path.rstrip("/")
-    return path == "/playlist" or (path == "/watch" and "v" not in query_values)
+    return "list" in query_values
 
 
 def detect_source_name(data: dict, query: str) -> str:
