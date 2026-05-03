@@ -1149,7 +1149,7 @@ class PlayModal(discord.ui.Modal, title="Pustit hudbu"):
 
 class PlayerPanelView(discord.ui.View):
     def __init__(self, guild: discord.Guild):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.guild = guild
         if radio_aliases:
             self.add_item(RadioSelect())
