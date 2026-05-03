@@ -398,7 +398,7 @@ class DiskzokejHelpersTest(unittest.TestCase):
             diskzokej.SLASH_COMMAND_GUILD_IDS = original_ids
             diskzokej.bot.tree = original_tree
 
-    def test_sync_application_commands_clears_global_when_guild_ids_are_used(self) -> None:
+    def test_sync_application_commands_keeps_global_when_guild_ids_are_used(self) -> None:
         original_ids = diskzokej.SLASH_COMMAND_GUILD_IDS
         original_tree = diskzokej.bot.tree
         diskzokej.SLASH_COMMAND_GUILD_IDS = [111, 222]
@@ -418,7 +418,7 @@ class DiskzokejHelpersTest(unittest.TestCase):
 
             self.assertEqual(copied_ids, [111, 222])
             self.assertEqual(synced_ids, [None, 111, 222])
-            self.assertEqual(cleared_ids, [None, 111, 222])
+            self.assertEqual(cleared_ids, [111, 222])
         finally:
             diskzokej.SLASH_COMMAND_GUILD_IDS = original_ids
             diskzokej.bot.tree = original_tree

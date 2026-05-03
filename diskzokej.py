@@ -1404,14 +1404,8 @@ async def send_player_panel(
 
 
 async def sync_application_commands() -> None:
-    if not SLASH_COMMAND_GUILD_IDS:
-        synced_commands = await bot.tree.sync()
-        LOGGER.info("Sesynchronizovano globalnich slash commandu: %s", len(synced_commands))
-        return
-
-    bot.tree.clear_commands(guild=None)
-    synced_global = await bot.tree.sync()
-    LOGGER.info("Vymazano globalnich slash commandu kvuli guild synchronizaci: %s", len(synced_global))
+    synced_commands = await bot.tree.sync()
+    LOGGER.info("Sesynchronizovano globalnich slash commandu: %s", len(synced_commands))
 
     for guild_id in SLASH_COMMAND_GUILD_IDS:
         guild_object = discord.Object(id=guild_id)
