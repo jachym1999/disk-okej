@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -167,6 +167,34 @@ def looks_like_url(value: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def clean_http_headers(headers: Any) -> Dict[str, str]:
+    if not isinstance(headers, dict):
+        return {}
+
+    clean_headers: Dict[str, str] = {}
+    for raw_key, raw_value in headers.items():
+        if raw_value is None:
+            continue
+        key = str(raw_key).strip()
+        value = str(raw_value).replace("\r", " ").replace("\n", " ").strip()
+        if key and value:
+            clean_headers[key] = value
+    return clean_headers
+
+
+def build_ffmpeg_before_options(track: "Track") -> str:
+    before_options = FFMPEG_OPTIONS["before_options"]
+    if not track.http_headers:
+        return before_options
+
+    header_text = "".join(
+        f"{key}: {value}\r\n"
+        for key, value in track.http_headers.items()
+    )
+    escaped_header_text = header_text.replace('"', r"\"")
+    return f'{before_options} -headers "{escaped_header_text}"'
+
+
 @dataclass
 class Track:
     title: str
@@ -174,6 +202,7 @@ class Track:
     stream_url: str
     requested_by: str
     source_name: str
+    http_headers: Dict[str, str] = field(default_factory=dict)
 
 def find_ffmpeg_executable() -> Optional[str]:
     path_ffmpeg = shutil.which("ffmpeg")
@@ -395,10 +424,13 @@ class GuildPlayer:
                             "Bot uz neni pripojeny do hlasoveho kanalu. Pripoj ho znovu prikazem `!play` nebo `!radio`."
                         )
 
+                    await self.send_status(f"Spoustim audio stream pres FFmpeg: **{track.title}**")
+                    ffmpeg_options = dict(FFMPEG_OPTIONS)
+                    ffmpeg_options["before_options"] = build_ffmpeg_before_options(track)
                     source = discord.FFmpegPCMAudio(
                         track.stream_url,
                         executable=FFMPEG_EXECUTABLE,
-                        **FFMPEG_OPTIONS,
+                        **ffmpeg_options,
                     )
                     self.current_source = discord.PCMVolumeTransformer(source, volume=self.volume)
                     self.voice_client.play(self.current_source, after=after_playback)
@@ -656,6 +688,7 @@ def create_track_from_data(data: dict, query: str, requested_by: str) -> Track:
     webpage_url = data.get("webpage_url") or data.get("original_url")
     title = data.get("title") or "Neznamy nazev"
     source_name = detect_source_name(data, query)
+    http_headers = clean_http_headers(data.get("http_headers"))
 
     if not stream_url or not webpage_url:
         if looks_like_url(query) and is_direct_media_url(query):
@@ -668,6 +701,7 @@ def create_track_from_data(data: dict, query: str, requested_by: str) -> Track:
         stream_url=stream_url,
         requested_by=requested_by,
         source_name=source_name,
+        http_headers=http_headers,
     )
 
 

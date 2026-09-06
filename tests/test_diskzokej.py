@@ -392,6 +392,39 @@ class DiskzokejHelpersTest(unittest.TestCase):
             "Poustim: **pisen**\nhttps://www.youtube.com/watch?v=abc",
         )
 
+    def test_create_track_from_data_keeps_youtube_http_headers(self) -> None:
+        track = diskzokej.create_track_from_data(
+            {
+                "title": "pisen",
+                "url": "https://rr.example.com/audio",
+                "webpage_url": "https://www.youtube.com/watch?v=abc",
+                "http_headers": {
+                    "User-Agent": "yt-dlp",
+                    "X-Bad": "radek\nnavic",
+                },
+            },
+            "pisen",
+            "Tester",
+        )
+
+        self.assertEqual(track.http_headers["User-Agent"], "yt-dlp")
+        self.assertEqual(track.http_headers["X-Bad"], "radek navic")
+
+    def test_build_ffmpeg_before_options_adds_headers(self) -> None:
+        track = diskzokej.Track(
+            "pisen",
+            "https://www.youtube.com/watch?v=abc",
+            "https://rr.example.com/audio",
+            "Tester",
+            "Youtube",
+            {"User-Agent": "yt-dlp"},
+        )
+
+        before_options = diskzokej.build_ffmpeg_before_options(track)
+
+        self.assertIn("-headers", before_options)
+        self.assertIn("User-Agent: yt-dlp", before_options)
+
     def test_build_help_text_omits_panel_command(self) -> None:
         help_text = diskzokej.build_help_text().lower()
 
