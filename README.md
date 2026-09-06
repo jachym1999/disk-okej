@@ -1,7 +1,7 @@
 # Discord music bot pro Raspberry Pi
 
 Bot prijima prikazy primo v textovem kanalu na Discord serveru.
-Krome klasickych textovych prikazu umi i slash commandy a jednoduche Discord GUI s tlacitky.
+Krome klasickych textovych prikazu umi i slash commandy.
 
 ## Co umi
 
@@ -16,11 +16,10 @@ Krome klasickych textovych prikazu umi i slash commandy a jednoduche Discord GUI
 - `!queue`: vypise frontu
 - `!np`: ukaze, co prave hraje
 - `!leave`: odpoji bota z hlasoveho kanalu
-- `!panel`: otevre ovladaci panel s tlacitky a vyberem radia
 
 Slash commandy:
 
-- `/play`, `/radio`, `/radios`, `/pause`, `/resume`, `/skip`, `/stop`, `/queue`, `/np`, `/leave`, `/help`, `/panel`
+- `/play`, `/radio`, `/radios`, `/pause`, `/resume`, `/skip`, `/stop`, `/queue`, `/np`, `/leave`, `/help`
 
 ## Instalace na Raspberry Pi
 
@@ -114,7 +113,31 @@ sudo systemctl status diskzokej.service
 journalctl -u diskzokej.service -f
 ```
 
-9. Zakladni testy helperu:
+9. Volitelne zapni automaticke stahovani novych verzi z Gitu:
+
+```bash
+cd /home/pi/diskzokej
+chmod +x install_auto_update.sh auto_update_from_git.sh
+./install_auto_update.sh
+```
+
+Timer kazdych 5 minut zkontroluje `origin/main`. Kdyz najde novy commit, udela `git merge --ff-only` a restartuje `diskzokej.service`.
+Pokud jsou na Raspberry lokalni necommitnute zmeny, update se radeji preskoci.
+Interval muzes zmenit napr. takhle:
+
+```bash
+cd /home/pi/diskzokej
+INTERVAL=1min ./install_auto_update.sh
+```
+
+Kontrola auto updateru:
+
+```bash
+systemctl list-timers diskzokej-update.timer
+journalctl -u diskzokej-update.service -f
+```
+
+10. Zakladni testy helperu:
 
 ```bash
 cd /home/pi/diskzokej
@@ -134,5 +157,4 @@ python3 -m unittest discover -s tests
 - `command_prefix` v `config.json` muze byt libovolny neprazdny retezec, napr. `!`, `*`, `:` nebo treba `Prosim `.
 - `slash_command_guild_ids` v `config.json` je seznam Discord server ID, kam se maji slash commandy synchronizovat okamzite po restartu, napr. `[123456789012345678]`.
 - V `command_aliases.json` jsou klice puvodni anglicke prikazy a hodnoty jsou seznamy aliasu. Puvodni anglicke prikazy zustavaji funkcni vzdycky.
-- `panel` otevre Discord GUI s tlacitky `Pause`, `Resume`, `Skip`, `Stop`, `Refresh`, `Leave`, `Zavrit` a dropdownem na ulozena radia.
-- Panel je ted jeden hlavni zivy message: pri dalsim otevreni nebo akci se puvodni panel prepise, pripadne presune do noveho kanalu, misto aby pribyvaly dalsi stare zpravy. Bezna stavova hlaseni a chyby se pisou do panelu.
+- Po kazdem prikazu bot posle do textoveho kanalu kratkou zpravu s tim, co prave dela nebo co se stalo.

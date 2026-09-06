@@ -5,10 +5,9 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import discord
 from discord import app_commands
@@ -160,10 +159,7 @@ CANONICAL_COMMANDS = (
     "leave",
     "np",
     "help",
-    "panel",
 )
-PANEL_EMBED_TITLE = "Diskzokej"
-PANEL_HISTORY_SEARCH_LIMIT = 50
 
 
 def looks_like_url(value: str) -> bool:
@@ -178,15 +174,6 @@ class Track:
     stream_url: str
     requested_by: str
     source_name: str
-
-
-@dataclass
-class PanelState:
-    channel: Optional[discord.TextChannel] = None
-    message: Any = None
-    last_status: str = "Panel pripraven."
-    last_updated: Optional[datetime] = None
-
 
 def find_ffmpeg_executable() -> Optional[str]:
     path_ffmpeg = shutil.which("ffmpeg")
@@ -295,16 +282,13 @@ def build_help_text() -> str:
         f"`{format_command_label('queue')}` nebo `{format_slash_label('queue')}` - ukaze, co prave hraje a co je jeste ve fronte.\n"
         f"`{format_command_label('np')}` nebo `{format_slash_label('np')}` - ukaze aktualne prehravanou skladbu nebo stream.\n"
         f"`{format_command_label('leave')}` nebo `{format_slash_label('leave')}` - odpoji bota z hlasoveho kanalu.\n"
-        f"`{format_command_label('panel')}` nebo `{format_slash_label('panel')}` - otevre ovladaci panel s tlacitky a radii.\n"
         f"`{format_command_label('help')}` nebo `{format_slash_label('help')}` - ukaze tuhle napovedu.\n"
         f"Aktivni prefix: `{COMMAND_PREFIX}`\n"
         "Priklady:\n"
         f"`{COMMAND_PREFIX}play never gonna give you up`\n"
         f"`{COMMAND_PREFIX}play https://www.youtube.com/playlist?list=...`\n"
         f"`{COMMAND_PREFIX}radio https://stream.example.com/live.mp3 beat`\n"
-        f"`{COMMAND_PREFIX}panel`\n"
-        "`/play query:never gonna give you up`\n"
-        "`/panel`"
+        "`/play query:never gonna give you up`"
     )
 
 
@@ -322,7 +306,7 @@ class GuildPlayer:
         self.player_task = bot.loop.create_task(self.player_loop())
 
     async def send_status(self, message: str) -> None:
-        await update_panel_status(self.guild, message, preferred_channel=self.text_channel)
+        await send_status_update(self.guild, message, preferred_channel=self.text_channel)
 
     def _finish_event(self, finished: asyncio.Event) -> None:
         self.bot.loop.call_soon_threadsafe(finished.set)
@@ -490,7 +474,6 @@ bot = commands.Bot(
     case_insensitive=True,
 )
 players: Dict[int, GuildPlayer] = {}
-panel_states: Dict[int, PanelState] = {}
 tree_synced = False
 ytdl = YoutubeDL(YTDL_OPTIONS)
 fallback_ytdl = YoutubeDL(
@@ -610,7 +593,7 @@ def pick_first_entry(data: dict) -> Optional[dict]:
     return None
 
 
-def is_youtube_playlist_url(value: str) -> bool:
+def is_youtube_url(value: str) -> bool:
     if not looks_like_url(value):
         return False
 
@@ -618,11 +601,34 @@ def is_youtube_playlist_url(value: str) -> bool:
     host = parsed.netloc.lower()
     if host.startswith("www."):
         host = host[4:]
-    if host not in {"youtube.com", "music.youtube.com", "youtu.be"}:
+    return host in {"youtube.com", "music.youtube.com", "youtu.be"}
+
+
+def is_youtube_playlist_url(value: str) -> bool:
+    if not is_youtube_url(value):
         return False
 
+    parsed = urlparse(value)
     query_values = parse_qs(parsed.query)
     return "list" in query_values
+
+
+def normalize_youtube_playlist_url(value: str) -> str:
+    if not is_youtube_playlist_url(value):
+        return value
+
+    parsed = urlparse(value)
+    query_values = parse_qs(parsed.query)
+    playlist_ids = query_values.get("list") or []
+    if not playlist_ids:
+        return value
+
+    host = parsed.netloc or "www.youtube.com"
+    if host.lower().endswith("youtu.be"):
+        host = "www.youtube.com"
+
+    query = urlencode({"list": playlist_ids[0]})
+    return urlunparse((parsed.scheme or "https", host, "/playlist", "", query, ""))
 
 
 def detect_source_name(data: dict, query: str) -> str:
@@ -665,9 +671,30 @@ def create_track_from_data(data: dict, query: str, requested_by: str) -> Track:
     )
 
 
+def get_playlist_entry_url(entry: dict) -> Optional[str]:
+    for key in ("webpage_url", "original_url"):
+        value = entry.get(key)
+        if isinstance(value, str) and looks_like_url(value):
+            return value
+
+    url = entry.get("url")
+    if isinstance(url, str):
+        if looks_like_url(url):
+            return url
+        if entry.get("ie_key") == "Youtube" or len(url) == 11:
+            return f"https://www.youtube.com/watch?v={url}"
+
+    video_id = entry.get("id")
+    if isinstance(video_id, str) and video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+
+    return None
+
+
 async def extract_track(query: str, requested_by: str, *, allow_playlist: bool = False) -> Track | list[Track]:
     def _extract() -> dict:
-        search_term = query if looks_like_url(query) else f"ytsearch1:{query}"
+        search_term = normalize_youtube_playlist_url(query) if allow_playlist else query
+        search_term = search_term if looks_like_url(search_term) else f"ytsearch1:{search_term}"
         last_error = None
         format_candidates = ["bestaudio/best", "best", "bestvideo+bestaudio/best", None]
 
@@ -708,7 +735,19 @@ async def extract_track(query: str, requested_by: str, *, allow_playlist: bool =
                 try:
                     tracks.append(create_track_from_data(entry, query, requested_by))
                 except commands.CommandError:
-                    LOGGER.debug("Preskakuju nepouzitelnou polozku playlistu.", exc_info=True)
+                    entry_url = get_playlist_entry_url(entry)
+                    if not entry_url:
+                        LOGGER.debug("Preskakuju nepouzitelnou polozku playlistu.", exc_info=True)
+                        continue
+                    try:
+                        resolved_entry = await extract_track(entry_url, requested_by, allow_playlist=False)
+                    except commands.CommandError:
+                        LOGGER.debug("Nepodarilo se nacist polozku playlistu: %s", entry_url, exc_info=True)
+                        continue
+                    if isinstance(resolved_entry, list):
+                        tracks.extend(resolved_entry)
+                    else:
+                        tracks.append(resolved_entry)
             if tracks:
                 return tracks
             raise commands.CommandError("Z playlistu se nepodarilo ziskat zadne prehravatelne skladby.")
@@ -745,14 +784,6 @@ def resolve_radio_input(value: str) -> str:
     return radio_aliases.get(alias, value.strip())
 
 
-def get_panel_state(guild: discord.Guild) -> PanelState:
-    state = panel_states.get(guild.id)
-    if state is None:
-        state = PanelState()
-        panel_states[guild.id] = state
-    return state
-
-
 def find_player(guild: discord.Guild) -> Optional[GuildPlayer]:
     return players.get(guild.id)
 
@@ -761,25 +792,6 @@ def get_queue_snapshot(player: Optional[GuildPlayer]) -> list[Track]:
     if player is None:
         return []
     return list(player.queue._queue)
-
-
-def trim_for_field(value: str, limit: int = 1024) -> str:
-    if len(value) <= limit:
-        return value
-    return value[: limit - 3] + "..."
-
-
-def get_panel_color(player: Optional[GuildPlayer], status: str) -> int:
-    lowered = status.lower()
-    if "chyb" in lowered or "nepodarilo" in lowered or "spadlo" in lowered:
-        return 0xD64545
-    if player and player.voice_client and player.voice_client.is_connected():
-        if player.voice_client.is_paused():
-            return 0xD9A441
-        if player.voice_client.is_playing():
-            return 0x2E9E5B
-        return 0x4C6EF5
-    return 0x6C757D
 
 
 def build_queue_text(player: Optional[GuildPlayer]) -> str:
@@ -795,90 +807,6 @@ def build_queue_text(player: Optional[GuildPlayer]) -> str:
         lines.append("Fronta je prazdna.")
 
     return "\n".join(lines)
-
-
-def build_player_embed(guild: discord.Guild, player: Optional[GuildPlayer]) -> discord.Embed:
-    panel_state = get_panel_state(guild)
-    status = "Pripraven."
-    if panel_state and panel_state.last_status:
-        status = panel_state.last_status
-
-    embed = discord.Embed(
-        title="Diskzokej",
-        description="Zivy ovladaci panel prehravani",
-        color=get_panel_color(player, status),
-    )
-    embed.add_field(name="Posledni akce", value=trim_for_field(status), inline=False)
-
-    if player and player.current:
-        embed.add_field(
-            name="Prave hraje",
-            value=trim_for_field(
-                "\n".join(
-                    [
-                        f"**{player.current.title}**",
-                        f"`zdroj:` {player.current.source_name}",
-                        f"`zadal:` {player.current.requested_by}",
-                        player.current.webpage_url,
-                    ]
-                )
-            ),
-            inline=False,
-        )
-    else:
-        embed.add_field(name="Prave hraje", value="Nic nehraje.", inline=False)
-
-    state_lines = []
-    if player and player.voice_client and player.voice_client.is_connected():
-        state_lines.append(f"`kanal:` {player.voice_client.channel}")
-        if player.voice_client.is_paused():
-            state_lines.append("`stav:` pauza")
-        elif player.voice_client.is_playing():
-            state_lines.append("`stav:` prehrava")
-        else:
-            state_lines.append("`stav:` pripojen, ale nehraje")
-        listeners = 0
-        if player.voice_client.channel:
-            listeners = sum(1 for member in player.voice_client.channel.members if not member.bot)
-        state_lines.append(f"`lidi:` {listeners}")
-    else:
-        state_lines.append("`kanal:` nepripojen")
-        state_lines.append("`stav:` idle")
-
-    queue_items = get_queue_snapshot(player)
-    state_lines.append(f"`fronta:` {len(queue_items)}")
-    embed.add_field(name="Stav", value=trim_for_field("\n".join(state_lines)), inline=True)
-
-    summary_lines = [
-        f"`prefix:` {COMMAND_PREFIX}",
-        f"`radia:` {len(radio_aliases)}",
-        f"`volume:` {int(round((player.volume if player else DEFAULT_VOLUME_PERCENT / 100.0) * 100))}%",
-    ]
-    updated_text = "ted"
-    if panel_state and panel_state.last_updated is not None:
-        updated_text = panel_state.last_updated.strftime("%H:%M:%S")
-    summary_lines.append(f"`sync:` {updated_text}")
-    embed.add_field(name="Prehled", value="\n".join(summary_lines), inline=True)
-
-    queue_text = build_queue_text(player)
-    embed.add_field(name="Fronta", value=trim_for_field(queue_text), inline=False)
-
-    history_lines = []
-    if player and player.history:
-        history_lines = [f"`{index}.` {title}" for index, title in enumerate(player.history, start=1)]
-    else:
-        history_lines = ["Zatim nic nedohralo."]
-    embed.add_field(name="Mini historie", value=trim_for_field("\n".join(history_lines)), inline=False)
-
-    voice_state = "Nepripojen"
-    if player and player.voice_client and player.voice_client.is_connected():
-        voice_state = f"Pripojen do `{player.voice_client.channel}`"
-        if player.voice_client.is_paused():
-            voice_state += " (pauza)"
-    embed.set_footer(
-        text=f"{voice_state} | Panel se automaticky obnovuje"
-    )
-    return embed
 
 
 def require_member_voice(member: discord.Member) -> discord.VoiceState:
@@ -945,11 +873,39 @@ async def enqueue_play_request(
     if not FFMPEG_EXECUTABLE:
         raise commands.CommandError(
             "FFmpeg nebyl nalezen. Nainstaluj ho a restartuj terminal nebo PC."
-        )
+    )
     cleaned_query = query.strip()
+    if not cleaned_query:
+        raise commands.CommandError("Pro `play` zadej YouTube odkaz nebo hledany text.")
+
     playlist_requested = is_youtube_playlist_url(cleaned_query)
 
     player = await ensure_voice_for_member(guild, member, text_channel)
+    if playlist_requested:
+        await send_status_update(
+            guild,
+            "Nacitam YouTube playlist, muze to chvili trvat...",
+            preferred_channel=text_channel,
+        )
+    elif is_youtube_url(cleaned_query):
+        await send_status_update(
+            guild,
+            "Nacitam YouTube odkaz...",
+            preferred_channel=text_channel,
+        )
+    elif looks_like_url(cleaned_query):
+        await send_status_update(
+            guild,
+            "Nacitam odkaz...",
+            preferred_channel=text_channel,
+        )
+    else:
+        await send_status_update(
+            guild,
+            f"Vyhledavam na YouTube: `{cleaned_query}`",
+            preferred_channel=text_channel,
+        )
+
     result = await extract_track(
         cleaned_query,
         member.display_name,
@@ -1055,108 +1011,36 @@ def build_radios_text() -> str:
     return "Ulozena radia:\n" + "\n".join(lines)
 
 
-def is_player_panel_message(message: Any) -> bool:
-    bot_user = getattr(bot, "user", None)
-    author = getattr(message, "author", None)
-    if bot_user is not None and getattr(author, "id", None) != getattr(bot_user, "id", None):
-        return False
-
-    embeds = getattr(message, "embeds", None) or []
-    if not embeds:
-        return False
-
-    return getattr(embeds[0], "title", None) == PANEL_EMBED_TITLE
-
-
-async def find_existing_panel_message(channel: discord.TextChannel) -> Any:
-    found_messages = []
-    try:
-        async for message in channel.history(limit=PANEL_HISTORY_SEARCH_LIMIT):
-            if is_player_panel_message(message):
-                found_messages.append(message)
-    except Exception:
-        LOGGER.debug("Nepodarilo se projit historii kanalu kvuli hledani panelu.", exc_info=True)
-        return None
-
-    if not found_messages:
-        return None
-
-    message_to_keep = found_messages[0]
-    for duplicate in found_messages[1:]:
-        try:
-            await duplicate.delete()
-        except Exception:
-            LOGGER.debug("Nepodarilo se smazat starsi duplicitni panel.", exc_info=True)
-
-    return message_to_keep
-
-
-async def refresh_guild_panel(
+def get_status_channel(
     guild: discord.Guild,
-    *,
     preferred_channel: Optional[discord.TextChannel] = None,
-    force_new_message: bool = False,
-) -> None:
-    state = get_panel_state(guild)
-    old_channel = state.channel
+) -> Optional[discord.TextChannel]:
     if preferred_channel is not None:
-        state.channel = preferred_channel
-
-    channel = state.channel
-    if channel is None:
-        return
+        return preferred_channel
 
     player = find_player(guild)
-    embed = build_player_embed(guild, player)
-    view = PlayerPanelView(guild)
+    if player and player.text_channel is not None:
+        return player.text_channel
 
-    if state.message is None:
-        state.message = await find_existing_panel_message(channel)
+    system_channel = getattr(guild, "system_channel", None)
+    if system_channel is not None:
+        return system_channel
 
-    if (
-        preferred_channel is not None
-        and old_channel is not None
-        and old_channel != preferred_channel
-        and state.message is not None
-    ):
-        try:
-            await state.message.delete()
-        except Exception:
-            pass
-        state.message = None
-
-    if force_new_message and state.message is not None:
-        try:
-            await state.message.delete()
-        except Exception:
-            pass
-        state.message = None
-
-    if state.message is not None:
-        try:
-            await state.message.edit(embed=embed, view=view)
-            return
-        except Exception:
-            state.message = None
-
-    state.message = await channel.send(embed=embed, view=view)
+    return None
 
 
-async def update_panel_status(
+async def send_status_update(
     guild: discord.Guild,
     status: str,
     *,
     preferred_channel: Optional[discord.TextChannel] = None,
-    force_new_message: bool = False,
 ) -> None:
-    state = get_panel_state(guild)
-    state.last_status = status
-    state.last_updated = datetime.now()
-    await refresh_guild_panel(
-        guild,
-        preferred_channel=preferred_channel,
-        force_new_message=force_new_message,
-    )
+    channel = get_status_channel(guild, preferred_channel)
+    if channel is None:
+        LOGGER.info("Stav bez dostupneho textoveho kanalu na guild %s: %s", guild, status)
+        return
+
+    await channel.send(status)
 
 
 async def send_interaction_text(
@@ -1169,234 +1053,6 @@ async def send_interaction_text(
         await interaction.followup.send(content, ephemeral=ephemeral)
     else:
         await interaction.response.send_message(content, ephemeral=ephemeral)
-
-
-class RadioSelect(discord.ui.Select):
-    def __init__(self) -> None:
-        options = [
-            discord.SelectOption(label=alias, value=alias, description=radio_aliases[alias][:100])
-            for alias in sorted(radio_aliases)[:25]
-        ]
-        super().__init__(
-            placeholder="Vyber ulozene radio",
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        try:
-            guild = require_interaction_guild(interaction)
-            member = require_interaction_member(interaction)
-            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-            selected_alias = self.values[0]
-            track, _ = await enqueue_radio_request(guild, member, selected_alias, text_channel)
-            await interaction.response.defer()
-            await update_panel_status(
-                guild,
-                f"Pridano radio do fronty: **{track.title}**",
-                preferred_channel=text_channel,
-            )
-        except commands.CommandError as error:
-            await send_interaction_text(interaction, str(error), ephemeral=True)
-
-
-class PlayModal(discord.ui.Modal, title="Pustit hudbu"):
-    query = discord.ui.TextInput(
-        label="Co chces pustit",
-        placeholder="YouTube hledani nebo URL",
-        required=True,
-        max_length=400,
-    )
-
-    def __init__(self, guild: discord.Guild):
-        super().__init__()
-        self.guild = guild
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-        try:
-            guild = require_interaction_guild(interaction)
-            member = require_interaction_member(interaction)
-            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-            query_value = getattr(self.query, "value", None) or str(self.query)
-            tracks = await enqueue_play_request(guild, member, query_value, text_channel)
-            await update_panel_status(
-                guild,
-                format_play_enqueue_status(tracks),
-                preferred_channel=text_channel,
-            )
-        except commands.CommandError as error:
-            await send_interaction_text(interaction, str(error), ephemeral=True)
-        except Exception as error:
-            LOGGER.exception("Play modal selhal", exc_info=error)
-            guild = interaction.guild
-            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-            if guild is not None:
-                await update_panel_status(
-                    guild,
-                    "Nepodarilo se pridat skladbu z popup formulare.",
-                    preferred_channel=text_channel,
-                )
-            await send_interaction_text(interaction, "Nepodarilo se pridat skladbu.", ephemeral=True)
-
-
-class PlayerPanelView(discord.ui.View):
-    def __init__(self, guild: discord.Guild):
-        super().__init__(timeout=None)
-        self.guild = guild
-        if radio_aliases:
-            self.add_item(RadioSelect())
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        try:
-            require_interaction_guild(interaction)
-            require_interaction_member(interaction)
-            return True
-        except commands.CommandError as error:
-            await send_interaction_text(interaction, str(error), ephemeral=True)
-            return False
-
-    async def refresh_panel(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
-        await refresh_guild_panel(self.guild)
-
-    @discord.ui.button(label="Play", style=discord.ButtonStyle.success)
-    async def play_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_modal(PlayModal(self.guild))
-
-    @discord.ui.button(label="-", style=discord.ButtonStyle.secondary)
-    async def volume_down_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        try:
-            guild = require_interaction_guild(interaction)
-            member = require_interaction_member(interaction)
-            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-            status = await change_player_volume(guild, member, -0.1)
-            await interaction.response.defer()
-            await update_panel_status(guild, status, preferred_channel=text_channel)
-        except commands.CommandError as error:
-            await send_interaction_text(interaction, str(error), ephemeral=True)
-
-    @discord.ui.button(label="+", style=discord.ButtonStyle.secondary)
-    async def volume_up_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        try:
-            guild = require_interaction_guild(interaction)
-            member = require_interaction_member(interaction)
-            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-            status = await change_player_volume(guild, member, 0.1)
-            await interaction.response.defer()
-            await update_panel_status(guild, status, preferred_channel=text_channel)
-        except commands.CommandError as error:
-            await send_interaction_text(interaction, str(error), ephemeral=True)
-
-    @discord.ui.button(label="Pause", style=discord.ButtonStyle.secondary)
-    async def pause_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        try:
-            guild = require_interaction_guild(interaction)
-            member = require_interaction_member(interaction)
-            status = await pause_player(guild, member)
-            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-            await interaction.response.defer()
-            await update_panel_status(guild, status, preferred_channel=text_channel)
-        except commands.CommandError as error:
-            await send_interaction_text(interaction, str(error), ephemeral=True)
-
-    @discord.ui.button(label="Resume", style=discord.ButtonStyle.success)
-    async def resume_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        try:
-            guild = require_interaction_guild(interaction)
-            member = require_interaction_member(interaction)
-            status = await resume_player(guild, member)
-            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-            await interaction.response.defer()
-            await update_panel_status(guild, status, preferred_channel=text_channel)
-        except commands.CommandError as error:
-            await send_interaction_text(interaction, str(error), ephemeral=True)
-
-    @discord.ui.button(label="Skip", style=discord.ButtonStyle.primary)
-    async def skip_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        try:
-            guild = require_interaction_guild(interaction)
-            member = require_interaction_member(interaction)
-            status = await skip_player(guild, member)
-            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-            await interaction.response.defer()
-            await update_panel_status(guild, status, preferred_channel=text_channel)
-        except commands.CommandError as error:
-            await send_interaction_text(interaction, str(error), ephemeral=True)
-
-    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger)
-    async def stop_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        try:
-            guild = require_interaction_guild(interaction)
-            member = require_interaction_member(interaction)
-            status = await stop_player(guild, member)
-            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-            await interaction.response.defer()
-            await update_panel_status(guild, status, preferred_channel=text_channel)
-        except commands.CommandError as error:
-            await send_interaction_text(interaction, str(error), ephemeral=True)
-
-    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary)
-    async def queue_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-        await interaction.response.defer()
-        await update_panel_status(
-            self.guild,
-            "Panel byl rucne obnoven.",
-            preferred_channel=text_channel,
-        )
-
-    @discord.ui.button(label="Leave", style=discord.ButtonStyle.secondary)
-    async def leave_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        try:
-            guild = require_interaction_guild(interaction)
-            member = require_interaction_member(interaction)
-            status = await leave_player(guild, member)
-            text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-            await interaction.response.defer()
-            await update_panel_status(guild, status, preferred_channel=text_channel)
-        except commands.CommandError as error:
-            await send_interaction_text(interaction, str(error), ephemeral=True)
-
-    @discord.ui.button(label="Zavrit", style=discord.ButtonStyle.danger)
-    async def close_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        guild = require_interaction_guild(interaction)
-        state = get_panel_state(guild)
-        state.last_status = "Panel zavren."
-        state.last_updated = datetime.now()
-        state.channel = None
-        message = getattr(interaction, "message", None) or state.message
-        state.message = None
-        await interaction.response.defer()
-        if message is not None:
-            try:
-                await message.delete()
-            except Exception:
-                pass
-
-
-async def send_player_panel(
-    destination: commands.Context | discord.Interaction,
-    guild: discord.Guild,
-) -> None:
-    if isinstance(destination, commands.Context):
-        preferred_channel = destination.channel if isinstance(destination.channel, discord.TextChannel) else None
-        await update_panel_status(
-            guild,
-            "Panel otevren.",
-            preferred_channel=preferred_channel,
-        )
-        return
-
-    preferred_channel = destination.channel if isinstance(destination.channel, discord.TextChannel) else None
-    if not destination.response.is_done():
-        await destination.response.defer(ephemeral=True)
-    await update_panel_status(
-        guild,
-        "Panel otevren.",
-        preferred_channel=preferred_channel,
-    )
 
 
 async def sync_application_commands() -> None:
@@ -1439,7 +1095,7 @@ async def play(ctx: commands.Context, *, query: str) -> None:
         query,
         text_channel,
     )
-    await update_panel_status(
+    await send_status_update(
         guild,
         format_play_enqueue_status(tracks),
         preferred_channel=text_channel,
@@ -1459,13 +1115,13 @@ async def radio(ctx: commands.Context, *, value: str) -> None:
         text_channel,
     )
     if alias_saved:
-        await update_panel_status(
+        await send_status_update(
             guild,
             f"Ulozen alias `{alias_saved}` a pridano radio do fronty: **{track.title}**",
             preferred_channel=text_channel,
         )
         return
-    await update_panel_status(
+    await send_status_update(
         guild,
         f"Pridano radio do fronty: **{track.title}**",
         preferred_channel=text_channel,
@@ -1474,9 +1130,9 @@ async def radio(ctx: commands.Context, *, value: str) -> None:
 
 @bot.command(name="radios", aliases=get_command_aliases("radios"))
 async def radios(ctx: commands.Context) -> None:
-    await update_panel_status(
+    await send_status_update(
         require_guild(ctx),
-        "Panel zobrazuje ulozena radia i aktualni frontu.",
+        build_radios_text(),
         preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
     )
 
@@ -1486,7 +1142,7 @@ async def pause_cmd(ctx: commands.Context) -> None:
     if not isinstance(ctx.author, discord.Member):
         raise commands.CommandError("Tenhle bot funguje jen na serveru.")
     guild = require_guild(ctx)
-    await update_panel_status(
+    await send_status_update(
         guild,
         await pause_player(guild, ctx.author),
         preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
@@ -1498,7 +1154,7 @@ async def resume_cmd(ctx: commands.Context) -> None:
     if not isinstance(ctx.author, discord.Member):
         raise commands.CommandError("Tenhle bot funguje jen na serveru.")
     guild = require_guild(ctx)
-    await update_panel_status(
+    await send_status_update(
         guild,
         await resume_player(guild, ctx.author),
         preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
@@ -1510,7 +1166,7 @@ async def skip(ctx: commands.Context) -> None:
     if not isinstance(ctx.author, discord.Member):
         raise commands.CommandError("Tenhle bot funguje jen na serveru.")
     guild = require_guild(ctx)
-    await update_panel_status(
+    await send_status_update(
         guild,
         await skip_player(guild, ctx.author),
         preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
@@ -1522,7 +1178,7 @@ async def stop(ctx: commands.Context) -> None:
     if not isinstance(ctx.author, discord.Member):
         raise commands.CommandError("Tenhle bot funguje jen na serveru.")
     guild = require_guild(ctx)
-    await update_panel_status(
+    await send_status_update(
         guild,
         await stop_player(guild, ctx.author),
         preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
@@ -1531,9 +1187,10 @@ async def stop(ctx: commands.Context) -> None:
 
 @bot.command(name="queue", aliases=get_command_aliases("queue"))
 async def queue_cmd(ctx: commands.Context) -> None:
-    await update_panel_status(
-        require_guild(ctx),
-        "Fronta byla obnovena v panelu.",
+    guild = require_guild(ctx)
+    await send_status_update(
+        guild,
+        build_queue_text(find_player(guild)),
         preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
     )
 
@@ -1543,7 +1200,7 @@ async def leave(ctx: commands.Context) -> None:
     if not isinstance(ctx.author, discord.Member):
         raise commands.CommandError("Tenhle bot funguje jen na serveru.")
     guild = require_guild(ctx)
-    await update_panel_status(
+    await send_status_update(
         guild,
         await leave_player(guild, ctx.author),
         preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
@@ -1555,15 +1212,15 @@ async def now_playing(ctx: commands.Context) -> None:
     guild = require_guild(ctx)
     player = find_player(guild)
     if player is None or not player.current:
-        await update_panel_status(
+        await send_status_update(
             guild,
             "Prave nic nehraje.",
             preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
         )
         return
-    await update_panel_status(
+    await send_status_update(
         guild,
-        f"Prave hraje: **{player.current.title}**",
+        f"Prave hraje: **{player.current.title}**\n{player.current.webpage_url}",
         preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
     )
 
@@ -1573,28 +1230,21 @@ async def help_cmd(ctx: commands.Context) -> None:
     await ctx.send(build_help_text())
 
 
-@bot.command(name="panel", aliases=get_command_aliases("panel"))
-async def panel_cmd(ctx: commands.Context) -> None:
-    await send_player_panel(ctx, require_guild(ctx))
-
-
 @bot.tree.command(name="play", description="Prida skladbu, odkaz, nebo YouTube playlist do fronty")
 @app_commands.describe(query="Hledany text, URL skladby, nebo URL YouTube playlistu")
 async def play_slash(interaction: discord.Interaction, query: str) -> None:
     guild = require_interaction_guild(interaction)
     member = require_interaction_member(interaction)
     text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
+    await interaction.response.defer(ephemeral=True)
     tracks = await enqueue_play_request(guild, member, query, text_channel)
-    await update_panel_status(
+    status = format_play_enqueue_status(tracks)
+    await send_status_update(
         guild,
-        format_play_enqueue_status(tracks),
+        status,
         preferred_channel=text_channel,
     )
-    await send_interaction_text(
-        interaction,
-        "Panel byl aktualizovan.",
-        ephemeral=True,
-    )
+    await send_interaction_text(interaction, status, ephemeral=True)
 
 
 @bot.tree.command(name="radio", description="Prida radio stream nebo ulozi alias")
@@ -1605,34 +1255,25 @@ async def radio_slash(interaction: discord.Interaction, value: str) -> None:
     text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
     track, alias_saved = await enqueue_radio_request(guild, member, value, text_channel)
     if alias_saved:
-        await update_panel_status(
-            guild,
-            f"Ulozen alias `{alias_saved}` a pridano radio do fronty: **{track.title}**",
-            preferred_channel=text_channel,
-        )
-        await send_interaction_text(
-            interaction,
-            "Panel byl aktualizovan.",
-            ephemeral=True,
-        )
+        status = f"Ulozen alias `{alias_saved}` a pridano radio do fronty: **{track.title}**"
+        await send_status_update(guild, status, preferred_channel=text_channel)
+        await send_interaction_text(interaction, status, ephemeral=True)
         return
-    await update_panel_status(
-        guild,
-        f"Pridano radio do fronty: **{track.title}**",
-        preferred_channel=text_channel,
-    )
-    await send_interaction_text(interaction, "Panel byl aktualizovan.", ephemeral=True)
+    status = f"Pridano radio do fronty: **{track.title}**"
+    await send_status_update(guild, status, preferred_channel=text_channel)
+    await send_interaction_text(interaction, status, ephemeral=True)
 
 
 @bot.tree.command(name="radios", description="Ukaze ulozena radia")
 async def radios_slash(interaction: discord.Interaction) -> None:
     guild = require_interaction_guild(interaction)
-    await update_panel_status(
+    status = build_radios_text()
+    await send_status_update(
         guild,
-        "Panel zobrazuje ulozena radia i aktualni frontu.",
+        status,
         preferred_channel=interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None,
     )
-    await send_interaction_text(interaction, "Panel byl aktualizovan.", ephemeral=True)
+    await send_interaction_text(interaction, status, ephemeral=True)
 
 
 @bot.tree.command(name="pause", description="Pozastavi prehravani")
@@ -1640,8 +1281,9 @@ async def pause_slash(interaction: discord.Interaction) -> None:
     guild = require_interaction_guild(interaction)
     member = require_interaction_member(interaction)
     text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-    await update_panel_status(guild, await pause_player(guild, member), preferred_channel=text_channel)
-    await send_interaction_text(interaction, "Panel byl aktualizovan.", ephemeral=True)
+    status = await pause_player(guild, member)
+    await send_status_update(guild, status, preferred_channel=text_channel)
+    await send_interaction_text(interaction, status, ephemeral=True)
 
 
 @bot.tree.command(name="resume", description="Obnovi prehravani")
@@ -1649,8 +1291,9 @@ async def resume_slash(interaction: discord.Interaction) -> None:
     guild = require_interaction_guild(interaction)
     member = require_interaction_member(interaction)
     text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-    await update_panel_status(guild, await resume_player(guild, member), preferred_channel=text_channel)
-    await send_interaction_text(interaction, "Panel byl aktualizovan.", ephemeral=True)
+    status = await resume_player(guild, member)
+    await send_status_update(guild, status, preferred_channel=text_channel)
+    await send_interaction_text(interaction, status, ephemeral=True)
 
 
 @bot.tree.command(name="skip", description="Preskoci aktualni polozku")
@@ -1658,8 +1301,9 @@ async def skip_slash(interaction: discord.Interaction) -> None:
     guild = require_interaction_guild(interaction)
     member = require_interaction_member(interaction)
     text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-    await update_panel_status(guild, await skip_player(guild, member), preferred_channel=text_channel)
-    await send_interaction_text(interaction, "Panel byl aktualizovan.", ephemeral=True)
+    status = await skip_player(guild, member)
+    await send_status_update(guild, status, preferred_channel=text_channel)
+    await send_interaction_text(interaction, status, ephemeral=True)
 
 
 @bot.tree.command(name="stop", description="Zastavi prehravani a vymaze frontu")
@@ -1667,19 +1311,21 @@ async def stop_slash(interaction: discord.Interaction) -> None:
     guild = require_interaction_guild(interaction)
     member = require_interaction_member(interaction)
     text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-    await update_panel_status(guild, await stop_player(guild, member), preferred_channel=text_channel)
-    await send_interaction_text(interaction, "Panel byl aktualizovan.", ephemeral=True)
+    status = await stop_player(guild, member)
+    await send_status_update(guild, status, preferred_channel=text_channel)
+    await send_interaction_text(interaction, status, ephemeral=True)
 
 
 @bot.tree.command(name="queue", description="Ukaze frontu")
 async def queue_slash(interaction: discord.Interaction) -> None:
     guild = require_interaction_guild(interaction)
-    await update_panel_status(
+    status = build_queue_text(find_player(guild))
+    await send_status_update(
         guild,
-        "Fronta byla obnovena v panelu.",
+        status,
         preferred_channel=interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None,
     )
-    await send_interaction_text(interaction, "Panel byl aktualizovan.", ephemeral=True)
+    await send_interaction_text(interaction, status, ephemeral=True)
 
 
 @bot.tree.command(name="np", description="Ukaze prave prehravanou polozku")
@@ -1687,19 +1333,21 @@ async def np_slash(interaction: discord.Interaction) -> None:
     guild = require_interaction_guild(interaction)
     player = find_player(guild)
     if player is None or not player.current:
-        await update_panel_status(
+        status = "Prave nic nehraje."
+        await send_status_update(
             guild,
-            "Prave nic nehraje.",
+            status,
             preferred_channel=interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None,
         )
-        await send_interaction_text(interaction, "Panel byl aktualizovan.", ephemeral=True)
+        await send_interaction_text(interaction, status, ephemeral=True)
         return
-    await update_panel_status(
+    status = f"Prave hraje: **{player.current.title}**\n{player.current.webpage_url}"
+    await send_status_update(
         guild,
-        f"Prave hraje: **{player.current.title}**",
+        status,
         preferred_channel=interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None,
     )
-    await send_interaction_text(interaction, "Panel byl aktualizovan.", ephemeral=True)
+    await send_interaction_text(interaction, status, ephemeral=True)
 
 
 @bot.tree.command(name="leave", description="Odpoji bota z hlasoveho kanalu")
@@ -1707,19 +1355,14 @@ async def leave_slash(interaction: discord.Interaction) -> None:
     guild = require_interaction_guild(interaction)
     member = require_interaction_member(interaction)
     text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-    await update_panel_status(guild, await leave_player(guild, member), preferred_channel=text_channel)
-    await send_interaction_text(interaction, "Panel byl aktualizovan.", ephemeral=True)
+    status = await leave_player(guild, member)
+    await send_status_update(guild, status, preferred_channel=text_channel)
+    await send_interaction_text(interaction, status, ephemeral=True)
 
 
 @bot.tree.command(name="help", description="Ukaze napovedu")
 async def help_slash(interaction: discord.Interaction) -> None:
     await send_interaction_text(interaction, build_help_text(), ephemeral=True)
-
-
-@bot.tree.command(name="panel", description="Otevre ovladaci panel")
-async def panel_slash(interaction: discord.Interaction) -> None:
-    guild = require_interaction_guild(interaction)
-    await send_player_panel(interaction, guild)
 
 
 @bot.tree.error
@@ -1728,17 +1371,17 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     text_channel = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
     if isinstance(error, app_commands.CommandInvokeError) and isinstance(error.original, commands.CommandError):
         if guild is not None:
-            await update_panel_status(guild, str(error.original), preferred_channel=text_channel)
+            await send_status_update(guild, str(error.original), preferred_channel=text_channel)
         await send_interaction_text(interaction, str(error.original), ephemeral=True)
         return
     if isinstance(error, commands.CommandError):
         if guild is not None:
-            await update_panel_status(guild, str(error), preferred_channel=text_channel)
+            await send_status_update(guild, str(error), preferred_channel=text_channel)
         await send_interaction_text(interaction, str(error), ephemeral=True)
         return
     LOGGER.exception("Neocekavana chyba ve slash commandu", exc_info=error)
     if guild is not None:
-        await update_panel_status(guild, "Doslo k neocekavane chybe.", preferred_channel=text_channel)
+        await send_status_update(guild, "Doslo k neocekavane chybe.", preferred_channel=text_channel)
     await send_interaction_text(interaction, "Doslo k neocekavane chybe.", ephemeral=True)
 
 
@@ -1748,7 +1391,7 @@ async def on_command_error(ctx: commands.Context, error: Exception) -> None:
         return
     if isinstance(error, commands.MissingRequiredArgument):
         if ctx.guild is not None:
-            await update_panel_status(
+            await send_status_update(
                 ctx.guild,
                 f"Chybi parametr prikazu. Pouzij `{COMMAND_PREFIX}help`.",
                 preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
@@ -1758,7 +1401,7 @@ async def on_command_error(ctx: commands.Context, error: Exception) -> None:
         return
     if isinstance(error, commands.CommandError):
         if ctx.guild is not None:
-            await update_panel_status(
+            await send_status_update(
                 ctx.guild,
                 str(error),
                 preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
@@ -1769,7 +1412,7 @@ async def on_command_error(ctx: commands.Context, error: Exception) -> None:
 
     LOGGER.exception("Neocekavana chyba", exc_info=error)
     if ctx.guild is not None:
-        await update_panel_status(
+        await send_status_update(
             ctx.guild,
             "Doslo k neocekavane chybe.",
             preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,

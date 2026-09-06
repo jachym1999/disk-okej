@@ -346,6 +346,25 @@ class DiskzokejHelpersTest(unittest.TestCase):
         )
         self.assertFalse(diskzokej.is_youtube_playlist_url("drink jako panak"))
 
+    def test_is_youtube_url_accepts_video_and_short_links(self) -> None:
+        self.assertTrue(diskzokej.is_youtube_url("https://www.youtube.com/watch?v=abc"))
+        self.assertTrue(diskzokej.is_youtube_url("https://youtu.be/abc"))
+        self.assertFalse(diskzokej.is_youtube_url("https://example.com/watch?v=abc"))
+
+    def test_normalize_youtube_playlist_url_converts_watch_playlist_links(self) -> None:
+        self.assertEqual(
+            diskzokej.normalize_youtube_playlist_url(
+                "https://www.youtube.com/watch?v=qU0_tfLe_f8&list=RDEMJRkAOj1KA-D40XdeTzhbbw&start_radio=1"
+            ),
+            "https://www.youtube.com/playlist?list=RDEMJRkAOj1KA-D40XdeTzhbbw",
+        )
+
+    def test_get_playlist_entry_url_builds_youtube_watch_url_from_id(self) -> None:
+        self.assertEqual(
+            diskzokej.get_playlist_entry_url({"id": "qU0_tfLe_f8"}),
+            "https://www.youtube.com/watch?v=qU0_tfLe_f8",
+        )
+
     def test_format_play_enqueue_status_counts_playlist_tracks(self) -> None:
         tracks = [
             diskzokej.Track("prvni", "https://example.com/1", "https://media.example.com/1", "Tester", "Youtube"),
@@ -357,36 +376,31 @@ class DiskzokejHelpersTest(unittest.TestCase):
             "Pridano do fronty 2 skladeb z playlistu.",
         )
 
-    def test_is_player_panel_message_matches_own_panel_embed(self) -> None:
-        original_user = getattr(diskzokej.bot, "user", None)
-        diskzokej.bot.user = types.SimpleNamespace(id=123)
-        try:
-            message = types.SimpleNamespace(
-                author=types.SimpleNamespace(id=123),
-                embeds=[types.SimpleNamespace(title="Diskzokej")],
-            )
+    def test_build_help_text_omits_panel_command(self) -> None:
+        help_text = diskzokej.build_help_text().lower()
 
-            self.assertTrue(diskzokej.is_player_panel_message(message))
-        finally:
-            diskzokej.bot.user = original_user
+        self.assertNotIn("panel", help_text)
+        self.assertNotIn("gui", help_text)
 
-    def test_is_player_panel_message_ignores_other_messages(self) -> None:
-        original_user = getattr(diskzokej.bot, "user", None)
-        diskzokej.bot.user = types.SimpleNamespace(id=123)
-        try:
-            other_author_message = types.SimpleNamespace(
-                author=types.SimpleNamespace(id=456),
-                embeds=[types.SimpleNamespace(title="Diskzokej")],
-            )
-            other_embed_message = types.SimpleNamespace(
-                author=types.SimpleNamespace(id=123),
-                embeds=[types.SimpleNamespace(title="Jiny embed")],
-            )
+    def test_send_status_update_sends_plain_channel_message(self) -> None:
+        class FakeChannel:
+            def __init__(self) -> None:
+                self.messages = []
 
-            self.assertFalse(diskzokej.is_player_panel_message(other_author_message))
-            self.assertFalse(diskzokej.is_player_panel_message(other_embed_message))
-        finally:
-            diskzokej.bot.user = original_user
+            async def send(self, content: str) -> None:
+                self.messages.append(content)
+
+        channel = FakeChannel()
+
+        asyncio.run(
+            diskzokej.send_status_update(
+                types.SimpleNamespace(name="Test server"),
+                "Pridano do fronty.",
+                preferred_channel=channel,
+            )
+        )
+
+        self.assertEqual(channel.messages, ["Pridano do fronty."])
 
     def test_sync_application_commands_uses_global_sync_without_guild_ids(self) -> None:
         original_ids = diskzokej.SLASH_COMMAND_GUILD_IDS
