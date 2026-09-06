@@ -425,6 +425,65 @@ class DiskzokejHelpersTest(unittest.TestCase):
         self.assertIn("-headers", before_options)
         self.assertIn("User-Agent: yt-dlp", before_options)
 
+    def test_should_refresh_track_before_playback_only_for_youtube(self) -> None:
+        self.assertTrue(
+            diskzokej.should_refresh_track_before_playback(
+                diskzokej.Track(
+                    "pisen",
+                    "https://www.youtube.com/watch?v=abc",
+                    "https://rr.example.com/audio-old",
+                    "Tester",
+                    "Youtube",
+                )
+            )
+        )
+        self.assertFalse(
+            diskzokej.should_refresh_track_before_playback(
+                diskzokej.Track(
+                    "radio",
+                    "https://radio.example.com/live.mp3",
+                    "https://radio.example.com/live.mp3",
+                    "Tester",
+                    "radio.example.com",
+                )
+            )
+        )
+
+    def test_refresh_track_before_playback_reextracts_youtube_stream(self) -> None:
+        original_extract_track = diskzokej.extract_track
+        calls = []
+
+        async def fake_extract_track(query, requested_by, *, allow_playlist=False):
+            calls.append((query, requested_by, allow_playlist))
+            return diskzokej.Track(
+                "pisen refreshed",
+                "https://www.youtube.com/watch?v=abc",
+                "https://rr.example.com/audio-new",
+                requested_by,
+                "Youtube",
+                {"User-Agent": "fresh"},
+            )
+
+        diskzokej.extract_track = fake_extract_track
+        try:
+            refreshed = asyncio.run(
+                diskzokej.refresh_track_before_playback(
+                    diskzokej.Track(
+                        "pisen old",
+                        "https://www.youtube.com/watch?v=abc",
+                        "https://rr.example.com/audio-old",
+                        "Tester",
+                        "Youtube",
+                    )
+                )
+            )
+        finally:
+            diskzokej.extract_track = original_extract_track
+
+        self.assertEqual(refreshed.stream_url, "https://rr.example.com/audio-new")
+        self.assertEqual(refreshed.requested_by, "Tester")
+        self.assertEqual(calls, [("https://www.youtube.com/watch?v=abc", "Tester", False)])
+
     def test_build_help_text_omits_panel_command(self) -> None:
         help_text = diskzokej.build_help_text().lower()
 

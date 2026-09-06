@@ -58,7 +58,14 @@ DEFAULT_CONFIG = {
     },
 }
 FFMPEG_OPTIONS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "before_options": (
+        "-reconnect 1 "
+        "-reconnect_streamed 1 "
+        "-reconnect_at_eof 1 "
+        "-reconnect_on_network_error 1 "
+        "-reconnect_on_http_error 4xx,5xx "
+        "-reconnect_delay_max 5"
+    ),
     "options": "-vn",
 }
 
@@ -203,6 +210,10 @@ def build_ffmpeg_before_options(track: "Track") -> str:
     )
     escaped_header_text = header_text.replace('"', r"\"")
     return f'{before_options} -headers "{escaped_header_text}"'
+
+
+def should_refresh_track_before_playback(track: "Track") -> bool:
+    return is_youtube_url(track.webpage_url)
 
 
 def bot_message_kwargs() -> Dict[str, int]:
@@ -383,12 +394,12 @@ class GuildPlayer:
         self,
         track: Track,
         finished: asyncio.Event,
-    ) -> None:
+    ) -> bool:
         for _ in range(PLAYBACK_START_TIMEOUT * 2):
             if finished.is_set():
-                return
+                return False
             if self.voice_client and self.voice_client.is_playing():
-                return
+                return True
             await asyncio.sleep(0.5)
 
         LOGGER.warning("Stream se nerozbehl vcas na %s: %s", self.guild.name, track.webpage_url)
@@ -398,6 +409,7 @@ class GuildPlayer:
         if self.voice_client and self.voice_client.is_connected():
             self.voice_client.stop()
         self._finish_event(finished)
+        return False
 
     async def player_loop(self) -> None:
         await self.bot.wait_until_ready()
@@ -421,13 +433,20 @@ class GuildPlayer:
                         return
                     continue
                 try:
+                    await self.send_status(f"Pripravuju prehravani: **{track.title}**\n{track.webpage_url}")
+                    if should_refresh_track_before_playback(track):
+                        await self.send_status(f"Obnovuju YouTube audio stream: **{track.title}**")
+                        track = await refresh_track_before_playback(track)
+
                     self.current = track
-                    await self.send_status(f"Prave hraju: **{track.title}**\n{track.webpage_url}")
 
                     finished = asyncio.Event()
+                    playback_error: Optional[Exception] = None
 
                     def after_playback(error: Optional[Exception]) -> None:
+                        nonlocal playback_error
                         if error:
+                            playback_error = error
                             LOGGER.exception("Chyba pri prehravani na %s", self.guild.name, exc_info=error)
                         self._finish_event(finished)
 
@@ -450,8 +469,14 @@ class GuildPlayer:
                     )
                     self.current_source = discord.PCMVolumeTransformer(source, volume=self.volume)
                     self.voice_client.play(self.current_source, after=after_playback)
-                    await self.wait_for_playback_start(track, finished)
+                    playback_started = await self.wait_for_playback_start(track, finished)
+                    if playback_started:
+                        await self.send_status(f"Prehravani bezi: **{track.title}**\n{track.webpage_url}")
                     await finished.wait()
+                    if playback_error:
+                        await self.send_status(
+                            f"Audio stream skoncil chybou: **{track.title}**. Preskakuju na dalsi polozku."
+                        )
                 except asyncio.CancelledError:
                     LOGGER.info("Ukoncuji prehravaci smycku pro guild %s", self.guild.name)
                     raise
@@ -812,6 +837,28 @@ async def extract_track(query: str, requested_by: str, *, allow_playlist: bool =
         data = picked_entry
 
     return create_track_from_data(data, query, requested_by)
+
+
+async def refresh_track_before_playback(track: Track) -> Track:
+    if not should_refresh_track_before_playback(track):
+        return track
+
+    refreshed = await extract_track(
+        track.webpage_url,
+        track.requested_by,
+        allow_playlist=False,
+    )
+    if isinstance(refreshed, list):
+        if not refreshed:
+            raise commands.CommandError(
+                f"Nepodarilo se obnovit YouTube stream pro **{track.title}**."
+            )
+        refreshed_track = refreshed[0]
+    else:
+        refreshed_track = refreshed
+
+    refreshed_track.requested_by = track.requested_by
+    return refreshed_track
 
 
 def create_radio_track(stream_url: str, requested_by: str) -> Track:
