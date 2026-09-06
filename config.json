@@ -4,6 +4,7 @@
   "default_volume_percent": 100,
   "idle_disconnect_timeout": 300,
   "playback_start_timeout": 15,
+  "bot_message_delete_after_seconds": 600,
   "direct_media_suffixes": [
     ".aac",
     ".flac",

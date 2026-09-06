@@ -78,6 +78,7 @@ python3 diskzokej.py
 ```
 
 Konfiguraci prefixu, timeoutu a `yt-dlp` voleb muzes upravit v `config.json`.
+Volba `bot_message_delete_after_seconds` urcuje, po kolika sekundach se maji bezne zpravy bota v chatu smazat. Vychozi hodnota `600` znamena 10 minut, hodnota `0` automaticke mazani vypne.
 V `command_aliases.json` si muzes nadefinovat vlastni aliasy prikazu, treba ceske varianty nad puvodnimi anglickymi prikazy.
 Po prvnim startu se slash commandy automaticky synchronizuji do Discordu.
 Pokud chces, aby se slash commandy propsaly rychle primo na konkretni server, vypln v `config.json` pole `slash_command_guild_ids`.

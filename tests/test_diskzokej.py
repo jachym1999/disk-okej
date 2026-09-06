@@ -435,9 +435,11 @@ class DiskzokejHelpersTest(unittest.TestCase):
         class FakeChannel:
             def __init__(self) -> None:
                 self.messages = []
+                self.kwargs = []
 
-            async def send(self, content: str) -> None:
+            async def send(self, content: str, **kwargs) -> None:
                 self.messages.append(content)
+                self.kwargs.append(kwargs)
 
         channel = FakeChannel()
 
@@ -450,6 +452,7 @@ class DiskzokejHelpersTest(unittest.TestCase):
         )
 
         self.assertEqual(channel.messages, ["Pridano do fronty."])
+        self.assertEqual(channel.kwargs, [{"delete_after": 600}])
 
     def test_sync_application_commands_uses_global_sync_without_guild_ids(self) -> None:
         original_ids = diskzokej.SLASH_COMMAND_GUILD_IDS

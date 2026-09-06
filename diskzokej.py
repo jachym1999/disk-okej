@@ -31,6 +31,7 @@ DEFAULT_CONFIG = {
     "default_volume_percent": 100,
     "idle_disconnect_timeout": 300,
     "playback_start_timeout": 15,
+    "bot_message_delete_after_seconds": 600,
     "direct_media_suffixes": [
         ".aac",
         ".flac",
@@ -134,6 +135,15 @@ IDLE_DISCONNECT_TIMEOUT = int(
 PLAYBACK_START_TIMEOUT = int(
     CONFIG.get("playback_start_timeout", DEFAULT_CONFIG["playback_start_timeout"])
 )
+BOT_MESSAGE_DELETE_AFTER_SECONDS = max(
+    0,
+    int(
+        CONFIG.get(
+            "bot_message_delete_after_seconds",
+            DEFAULT_CONFIG["bot_message_delete_after_seconds"],
+        )
+    ),
+)
 DEFAULT_VOLUME_PERCENT = max(
     0,
     min(200, int(CONFIG.get("default_volume_percent", DEFAULT_CONFIG["default_volume_percent"]))),
@@ -193,6 +203,12 @@ def build_ffmpeg_before_options(track: "Track") -> str:
     )
     escaped_header_text = header_text.replace('"', r"\"")
     return f'{before_options} -headers "{escaped_header_text}"'
+
+
+def bot_message_kwargs() -> Dict[str, int]:
+    if BOT_MESSAGE_DELETE_AFTER_SECONDS <= 0:
+        return {}
+    return {"delete_after": BOT_MESSAGE_DELETE_AFTER_SECONDS}
 
 
 @dataclass
@@ -1106,7 +1122,7 @@ async def send_status_update(
         LOGGER.info("Stav bez dostupneho textoveho kanalu na guild %s: %s", guild, status)
         return
 
-    await channel.send(status)
+    await channel.send(status, **bot_message_kwargs())
 
 
 async def send_interaction_text(
@@ -1293,7 +1309,7 @@ async def now_playing(ctx: commands.Context) -> None:
 
 @bot.command(name="help", aliases=get_command_aliases("help"))
 async def help_cmd(ctx: commands.Context) -> None:
-    await ctx.send(build_help_text())
+    await ctx.send(build_help_text(), **bot_message_kwargs())
 
 
 @bot.tree.command(name="play", description="Prida skladbu, odkaz, nebo YouTube playlist do fronty")
@@ -1463,7 +1479,7 @@ async def on_command_error(ctx: commands.Context, error: Exception) -> None:
                 preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
             )
         else:
-            await ctx.send(f"Chybi parametr prikazu. Pouzij `{COMMAND_PREFIX}help`.")
+            await ctx.send(f"Chybi parametr prikazu. Pouzij `{COMMAND_PREFIX}help`.", **bot_message_kwargs())
         return
     if isinstance(error, commands.CommandError):
         if ctx.guild is not None:
@@ -1473,7 +1489,7 @@ async def on_command_error(ctx: commands.Context, error: Exception) -> None:
                 preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
             )
         else:
-            await ctx.send(str(error))
+            await ctx.send(str(error), **bot_message_kwargs())
         return
 
     LOGGER.exception("Neocekavana chyba", exc_info=error)
@@ -1484,7 +1500,7 @@ async def on_command_error(ctx: commands.Context, error: Exception) -> None:
             preferred_channel=ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None,
         )
     else:
-        await ctx.send("Doslo k neocekavane chybe.")
+        await ctx.send("Doslo k neocekavane chybe.", **bot_message_kwargs())
 
 
 def main() -> None:
