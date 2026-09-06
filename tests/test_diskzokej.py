@@ -376,6 +376,22 @@ class DiskzokejHelpersTest(unittest.TestCase):
             "Pridano do fronty 2 skladeb z playlistu.",
         )
 
+    def test_format_track_ready_status_says_when_track_starts_now(self) -> None:
+        tracks = [
+            diskzokej.Track(
+                "pisen",
+                "https://www.youtube.com/watch?v=abc",
+                "https://media.example.com/abc",
+                "Tester",
+                "Youtube",
+            )
+        ]
+
+        self.assertEqual(
+            diskzokej.format_track_ready_status(tracks, starts_now=True),
+            "Poustim: **pisen**\nhttps://www.youtube.com/watch?v=abc",
+        )
+
     def test_build_help_text_omits_panel_command(self) -> None:
         help_text = diskzokej.build_help_text().lower()
 

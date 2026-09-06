@@ -879,8 +879,24 @@ async def enqueue_play_request(
         raise commands.CommandError("Pro `play` zadej YouTube odkaz nebo hledany text.")
 
     playlist_requested = is_youtube_playlist_url(cleaned_query)
+    voice_state = require_member_voice(member)
 
-    player = await ensure_voice_for_member(guild, member, text_channel)
+    await send_status_update(
+        guild,
+        f"Prijato: `{cleaned_query}`",
+        preferred_channel=text_channel,
+    )
+    await send_status_update(
+        guild,
+        f"Pripojuju se do hlasoveho kanalu `{voice_state.channel}`...",
+        preferred_channel=text_channel,
+    )
+
+    player = get_player(guild)
+    if text_channel is not None:
+        player.text_channel = text_channel
+    await player.connect(voice_state.channel)
+
     if playlist_requested:
         await send_status_update(
             guild,
@@ -906,12 +922,19 @@ async def enqueue_play_request(
             preferred_channel=text_channel,
         )
 
+    starts_now = player.current is None and player.queue.empty()
     result = await extract_track(
         cleaned_query,
         member.display_name,
         allow_playlist=playlist_requested,
     )
     tracks = result if isinstance(result, list) else [result]
+    await send_status_update(
+        guild,
+        format_track_ready_status(tracks, starts_now=starts_now),
+        preferred_channel=text_channel,
+    )
+
     for track in tracks:
         await player.queue.put(track)
     return tracks
@@ -923,6 +946,15 @@ def format_play_enqueue_status(tracks: list[Track]) -> str:
         return f"Pridano do fronty: **{track.title}** (`{track.source_name}`)"
 
     return f"Pridano do fronty {len(tracks)} skladeb z playlistu."
+
+
+def format_track_ready_status(tracks: list[Track], *, starts_now: bool) -> str:
+    action = "Poustim" if starts_now else "Davam do fronty"
+    if len(tracks) == 1:
+        track = tracks[0]
+        return f"{action}: **{track.title}**\n{track.webpage_url}"
+
+    return f"{action} YouTube playlist: {len(tracks)} skladeb."
 
 
 async def enqueue_radio_request(
