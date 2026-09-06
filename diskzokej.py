@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import shutil
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -216,6 +218,68 @@ def should_refresh_track_before_playback(track: "Track") -> bool:
     return is_youtube_url(track.webpage_url)
 
 
+def should_pipe_track_through_ytdlp(track: "Track") -> bool:
+    return is_youtube_url(track.webpage_url)
+
+
+def create_ytdlp_pipe_process(track: "Track") -> subprocess.Popen:
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "--quiet",
+            "--no-warnings",
+            "--no-playlist",
+            "--format",
+            "bestaudio/best",
+            "--output",
+            "-",
+            "--",
+            track.webpage_url,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def stop_helper_process(process: Optional[subprocess.Popen]) -> None:
+    if process is None or process.poll() is not None:
+        return
+
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def create_audio_source_handle(track: "Track") -> "AudioSourceHandle":
+    ffmpeg_options = dict(FFMPEG_OPTIONS)
+    if should_pipe_track_through_ytdlp(track):
+        helper_process = create_ytdlp_pipe_process(track)
+        if helper_process.stdout is None:
+            stop_helper_process(helper_process)
+            raise commands.CommandError("Nepodarilo se spustit yt-dlp audio pipe.")
+
+        source = discord.FFmpegPCMAudio(
+            helper_process.stdout,
+            pipe=True,
+            executable=FFMPEG_EXECUTABLE,
+            **ffmpeg_options,
+        )
+        return AudioSourceHandle(source=source, helper_process=helper_process)
+
+    ffmpeg_options["before_options"] = build_ffmpeg_before_options(track)
+    source = discord.FFmpegPCMAudio(
+        track.stream_url,
+        executable=FFMPEG_EXECUTABLE,
+        **ffmpeg_options,
+    )
+    return AudioSourceHandle(source=source)
+
+
 def bot_message_kwargs() -> Dict[str, int]:
     if BOT_MESSAGE_DELETE_AFTER_SECONDS <= 0:
         return {}
@@ -230,6 +294,12 @@ class Track:
     requested_by: str
     source_name: str
     http_headers: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class AudioSourceHandle:
+    source: Any
+    helper_process: Optional[subprocess.Popen] = None
 
 def find_ffmpeg_executable() -> Optional[str]:
     path_ffmpeg = shutil.which("ffmpeg")
@@ -416,6 +486,7 @@ class GuildPlayer:
         try:
             while not self.bot.is_closed():
                 track: Optional[Track] = None
+                source_handle: Optional[AudioSourceHandle] = None
                 try:
                     track = await asyncio.wait_for(
                         self.queue.get(),
@@ -434,7 +505,7 @@ class GuildPlayer:
                     continue
                 try:
                     await self.send_status(f"Pripravuju prehravani: **{track.title}**\n{track.webpage_url}")
-                    if should_refresh_track_before_playback(track):
+                    if should_refresh_track_before_playback(track) and not should_pipe_track_through_ytdlp(track):
                         await self.send_status(f"Obnovuju YouTube audio stream: **{track.title}**")
                         track = await refresh_track_before_playback(track)
 
@@ -459,15 +530,12 @@ class GuildPlayer:
                             "Bot uz neni pripojeny do hlasoveho kanalu. Pripoj ho znovu prikazem `!play` nebo `!radio`."
                         )
 
-                    await self.send_status(f"Spoustim audio stream pres FFmpeg: **{track.title}**")
-                    ffmpeg_options = dict(FFMPEG_OPTIONS)
-                    ffmpeg_options["before_options"] = build_ffmpeg_before_options(track)
-                    source = discord.FFmpegPCMAudio(
-                        track.stream_url,
-                        executable=FFMPEG_EXECUTABLE,
-                        **ffmpeg_options,
-                    )
-                    self.current_source = discord.PCMVolumeTransformer(source, volume=self.volume)
+                    if should_pipe_track_through_ytdlp(track):
+                        await self.send_status(f"Spoustim YouTube audio pres yt-dlp a FFmpeg: **{track.title}**")
+                    else:
+                        await self.send_status(f"Spoustim audio stream pres FFmpeg: **{track.title}**")
+                    source_handle = create_audio_source_handle(track)
+                    self.current_source = discord.PCMVolumeTransformer(source_handle.source, volume=self.volume)
                     self.voice_client.play(self.current_source, after=after_playback)
                     playback_started = await self.wait_for_playback_start(track, finished)
                     if playback_started:
@@ -498,6 +566,8 @@ class GuildPlayer:
                 finally:
                     if self.voice_client and self.voice_client.is_playing():
                         self.voice_client.stop()
+                    if source_handle is not None:
+                        stop_helper_process(source_handle.helper_process)
                     if track is not None:
                         self.history.appendleft(track.title)
                     self.current_source = None

@@ -40,7 +40,7 @@ sudo apt install -y python3 python3-pip ffmpeg libffi-dev libnacl-dev
 
 ```bash
 cd /home/pi/diskzokej
-python3 -m pip install -r requirements.txt
+python3 -m pip install --upgrade -r requirements.txt
 ```
 
 4. V Discord Developer Portalu:
@@ -150,6 +150,7 @@ python3 -m unittest discover -s tests
 - Pokud byl token ulozeny v `README.md` nebo jinem souboru projektu, zneplatni ho v Discord Developer Portalu a vygeneruj novy.
 - Bot potrebuje mit pristup do hlasoveho kanalu stejneho serveru, kde prijima prikazy.
 - Prehravani vyuziva `yt-dlp` a `ffmpeg`, takze musi byt `ffmpeg` dostupny v `PATH`.
+- Pokud YouTube video najde, ale FFmpeg hlasi `HTTP error 403 Forbidden`, aktualizuj zavislosti prikazem `python3 -m pip install --upgrade -r requirements.txt`.
 - `yt-dlp` umi krom YouTube i mnoho dalsich webu. Realna podpora zavisi na konkretni sluzbe a na tom, jestli z ni jde ziskat prehratelny stream.
 - Nektere sluzby, typicky cast Spotify odkazu, mohou vratit metadata bez primeho audio streamu. V takovem pripade odkaz nemusi jit prehrat, i kdyz ho stranka normalne otevira v prohlizeci.
 - U `!radio` zadavej primou URL audio streamu, ne jen domovskou stranku radia.

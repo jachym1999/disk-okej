@@ -6,6 +6,7 @@ REMOTE="${REMOTE:-origin}"
 BRANCH="${BRANCH:-main}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_AS_USER="${RUN_AS_USER:-${SUDO_USER:-$(id -un)}}"
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || true)}"
 
 run_git() {
   if [[ "${EUID}" -eq 0 ]]; then
@@ -15,8 +16,21 @@ run_git() {
   fi
 }
 
+run_as_project_user() {
+  if [[ "${EUID}" -eq 0 ]]; then
+    sudo -u "${RUN_AS_USER}" "$@"
+  else
+    "$@"
+  fi
+}
+
 if [[ ! -d "${SCRIPT_DIR}/.git" ]]; then
   echo "Chyba: ${SCRIPT_DIR} neni git repozitar." >&2
+  exit 1
+fi
+
+if [[ -z "${PYTHON_BIN}" ]]; then
+  echo "Chyba: python3 nebyl nalezen v PATH." >&2
   exit 1
 fi
 
@@ -37,6 +51,11 @@ fi
 
 echo "Stahuju novou verzi ${remote_commit}..."
 run_git merge --ff-only "${REMOTE}/${BRANCH}"
+
+if [[ -f "${SCRIPT_DIR}/requirements.txt" ]]; then
+  echo "Aktualizuju Python zavislosti..."
+  run_as_project_user "${PYTHON_BIN}" -m pip install --upgrade -r "${SCRIPT_DIR}/requirements.txt"
+fi
 
 echo "Restartuju ${SERVICE_NAME}..."
 if [[ "${EUID}" -eq 0 ]]; then
